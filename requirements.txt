@@ -1,0 +1,8 @@
+# Wszystkie zaleznosci maja prekompilowane wheele na macOS/Windows/Linux.
+# Instaluj z --only-binary=:all: — patrz CLAUDE.md §0 i §10.
+# Zadna z nich nie wymaga kompilatora, Xcode CLT ani MSVC Build Tools.
+
+duckdb>=1.0.0,<2.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+pytest>=8.0.0

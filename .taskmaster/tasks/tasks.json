@@ -1,0 +1,628 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 13,
+        "title": "Extend CORE_TAGS for Net Debt, FCF, and ROIC Components",
+        "description": "Add missing XBRL tag mappings to CORE_TAGS in xbrl_parser.py required for net debt, FCF, and ROIC calculations. Document semantic relationships between alternative tags to prevent double-counting.",
+        "details": "Extend CORE_TAGS dictionary with the following new concept mappings:\n\n1. D&A: ('DepreciationDepletionAndAmortization', 'DepreciationAmortizationAndAccretionNet')\n2. Finance lease liabilities: \n   - finance_lease_liab_current: ('FinanceLeaseLiabilityCurrent',)\n   - finance_lease_liab_noncurrent: ('FinanceLeaseLiabilityNoncurrent',)\n3. Short-term investments: ('ShortTermInvestments', 'MarketableSecuritiesCurrent')\n4. Debt umbrella: ('DebtCurrent', 'LongTermDebtAndCapitalLeaseObligations')\n5. Goodwill: ('Goodwill',)\n6. PPE net: ('PropertyPlantAndEquipmentNet',)\n7. Current assets/liabilities: assets_current: ('AssetsCurrent',), liabilities_current: ('LiabilitiesCurrent',)\n8. Intangibles: ('IntangibleAssetsNetExcludingGoodwill',)\n9. Share-based compensation: ('ShareBasedCompensation',)\n10. Operating lease ROU asset: ('OperatingLeaseRightOfUseAsset',)\n\nFor EACH tag list, add a docstring or comment documenting:\n- Whether alternatives are DISJOINT, CONTAINING, or EQUIVALENT\n- For CONTAINING relationships: explicit exclusion rule to prevent double-counting\n\nFix known double-count issue: `long_term_debt` fallback to `LongTermDebt` contains current portion while `short_term_debt` may also capture `LongTermDebtCurrent`. Add explicit logic or document mutual exclusion.\n\nCreate `TAG_SEMANTICS` dictionary documenting relationships:\n```python\nTAG_SEMANTICS = {\n    'long_term_debt': {\n        'relationship': 'CONTAINING',\n        'note': 'LongTermDebt includes current portion; if using fallback, exclude LongTermDebtCurrent from short_term_debt',\n    },\n    # ... for all lists with alternatives\n}\n```",
+        "testStrategy": "1. Run coverage_report on golden set companies (once available) - verify no MISSING for required components (revenue, ocf, capex must be OK; SBC allowed MISSING for non-tech)\n2. Unit test for double-count detection: create mock facts where LongTermDebt and LongTermDebtCurrent both exist; verify that net_debt calculation does NOT count current portion twice\n3. Validate each new tag exists in SEC taxonomy by checking at least 3 diverse companies via bootstrap.py --report\n4. Test that tag priority order is documented and stable across Python versions (dict ordering)",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 14,
+        "title": "Design and Implement FinancialPeriod Dataclass (Core Assembler)",
+        "description": "Create the FinancialPeriod assembler as the architectural boundary between FactsRepository and metrics layer. Metrics must NEVER import FactsRepository directly - they consume FinancialPeriod objects only.",
+        "details": "Create `data_layer/metrics/financial_period.py` with:\n\n```python\nfrom dataclasses import dataclass, field\nfrom datetime import date\nfrom typing import Literal\nfrom enum import Enum\n\nclass QualityFlag(str, Enum):\n    OK = 'OK'\n    PARTIAL = 'PARTIAL'\n    INSUFFICIENT_DATA = 'INSUFFICIENT_DATA'\n\nclass AdoptionMethod(str, Enum):\n    FULL_RETROSPECTIVE = 'FULL_RETROSPECTIVE'\n    MODIFIED_RETROSPECTIVE = 'MODIFIED_RETROSPECTIVE'\n    UNKNOWN = 'UNKNOWN'\n\n@dataclass(frozen=True, slots=True)\nclass LineItem:\n    value: float | None\n    unit: str\n    source_tag: str\n    source_accession: str\n    quality_flag: QualityFlag\n    \n@dataclass(frozen=True)\nclass FinancialPeriod:\n    cik: int\n    fiscal_year: int\n    period_start: date | None\n    period_end: date\n    as_of_date: date  # POSITIONAL, NO DEFAULT\n    duration_days: int  # period_end - period_start for duration items\n    items: dict[str, LineItem]  # concept -> LineItem\n    \n    # Transition fields (populated by F4/F6 extensions)\n    adoption_method: AdoptionMethod | None = None\n    is_comparable_to_prior: bool = True\n    is_stub_period: bool = False\n    \n    @property\n    def is_annual(self) -> bool:\n        return 350 <= self.duration_days <= 380\n```\n\nCreate `FinancialPeriodAssembler` class:\n- Constructor takes `FactsRepository` (NOT the connection directly)\n- `as_of_date` is POSITIONAL without default in all methods\n- For annual mode: filter facts to duration 350-380 days only\n- Build LineItem for each CORE_TAGS concept, recording source_tag and source_accession\n- Missing data -> quality_flag=INSUFFICIENT_DATA, value=None\n- Return frozen FinancialPeriod object\n\nDO NOT implement ASC 606 detection (F4) or stub period logic (F6) in this task - just provide the fields/hooks.",
+        "testStrategy": "1. Static import analysis test: use ast module to verify NO file in data_layer/metrics/ imports FactsRepository or calls get_facts_as_of/get_metric_series\n2. Test that FinancialPeriod for a known company/year contains only duration 350-380 day facts for flow items\n3. Test that each LineItem has non-empty source_tag and source_accession\n4. Test that as_of_date without default raises TypeError when not provided\n5. Test that missing concept returns LineItem with quality_flag=INSUFFICIENT_DATA and value=None",
+        "priority": "high",
+        "dependencies": [
+          13
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Define QualityFlag and AdoptionMethod Enums",
+            "description": "Create the enumeration types for data quality tracking and ASC 606 adoption method classification in financial_period.py",
+            "dependencies": [],
+            "details": "Create `data_layer/metrics/financial_period.py` with QualityFlag enum (OK, PARTIAL, INSUFFICIENT_DATA) inheriting from str and Enum for JSON serialization compatibility. Create AdoptionMethod enum (FULL_RETROSPECTIVE, MODIFIED_RETROSPECTIVE, UNKNOWN) for future F4 ASC 606 detection. These enums provide type-safe quality indicators that propagate through the metrics layer.",
+            "status": "pending",
+            "testStrategy": "Test that QualityFlag and AdoptionMethod values serialize correctly to strings. Verify enum membership checks work as expected. Test that invalid values raise appropriate errors."
+          },
+          {
+            "id": 2,
+            "title": "Implement LineItem Frozen Dataclass",
+            "description": "Create the immutable LineItem dataclass to represent individual financial facts with full provenance tracking",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement LineItem as @dataclass(frozen=True, slots=True) with fields: value (float | None), unit (str), source_tag (str for original XBRL concept), source_accession (str for SEC filing reference), quality_flag (QualityFlag). The frozen=True ensures immutability for safe sharing across metrics. slots=True optimizes memory for potentially thousands of LineItems per company.",
+            "status": "pending",
+            "testStrategy": "Test that LineItem is immutable (attempting to modify raises FrozenInstanceError). Test that None values are allowed for value field. Verify slots optimization by checking __slots__ attribute exists."
+          },
+          {
+            "id": 3,
+            "title": "Implement FinancialPeriod Frozen Dataclass",
+            "description": "Create the main FinancialPeriod dataclass as the core data structure consumed by all metrics calculations",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Implement FinancialPeriod as @dataclass(frozen=True) with required positional fields: cik (int), fiscal_year (int), period_start (date | None), period_end (date), as_of_date (date - POSITIONAL NO DEFAULT), duration_days (int), items (dict[str, LineItem]). Add optional fields with defaults: adoption_method (AdoptionMethod | None = None), is_comparable_to_prior (bool = True), is_stub_period (bool = False). Implement is_annual property returning True if 350 <= duration_days <= 380.",
+            "status": "pending",
+            "testStrategy": "Test that as_of_date is required positional (no default). Test is_annual property returns True for 365-day periods, False for 90-day quarters. Test that items dict is accessible but immutable. Verify frozen behavior prevents modification."
+          },
+          {
+            "id": 4,
+            "title": "Implement FinancialPeriodAssembler Class",
+            "description": "Create the assembler class that bridges FactsRepository to FinancialPeriod objects, enforcing the architectural boundary",
+            "dependencies": [
+              3
+            ],
+            "details": "Create FinancialPeriodAssembler class with constructor accepting FactsRepository instance (NOT connection). Implement assemble_annual_period(cik: int, fiscal_year: int, as_of_date: date) method where as_of_date is POSITIONAL without default. Filter facts to duration 350-380 days only for annual periods. Build LineItem for each CORE_TAGS concept from Task 13, recording source_tag and source_accession. Set quality_flag=INSUFFICIENT_DATA and value=None for missing data. Return frozen FinancialPeriod object.",
+            "status": "pending",
+            "testStrategy": "Test that assembler only accepts FactsRepository, not raw connection. Test that annual filtering correctly excludes quarterly facts (duration < 350 or > 380). Test that missing concepts result in LineItem with value=None and INSUFFICIENT_DATA flag. Verify returned FinancialPeriod is frozen."
+          },
+          {
+            "id": 5,
+            "title": "Add Static Import Analysis and Architectural Boundary Tests",
+            "description": "Egzekucja granicy F3 DWOMA mechanizmami, nie jednym. (1) GLOWNA bariera strukturalna: zakaz importu modulu facts_repo w calym data_layer/metrics/ - zaden plik nie importuje niczego z facts_repo (FactsRepository, PITMode). Bez importu nie da sie nazwac typu wstrzyknietego repo - zostaje Any, co samo jest sygnalem. (2) SIATKA bezpieczenstwa: flagowanie dostepu do atrybutow .get_facts_as_of / .get_metric_series na dowolnym obiekcie (przypadek wstrzykniecia bez typowania). Sam ban nazw metod jest za slaby - blacklista psuje sie gdy ktos doda 3. metode do repo i zapomni zaktualizowac test.",
+            "dependencies": [
+              4
+            ],
+            "details": "Create test file with ast module analysis to scan all files in data_layer/metrics/ directory. Verify NO file imports FactsRepository, get_facts_as_of, or get_metric_series. Test that FinancialPeriod for a known company/year contains only duration 350-380 day facts for flow items. Test that each LineItem has non-empty source_tag and source_accession. Add integration test verifying metrics can only consume FinancialPeriod objects, not raw repository access.",
+            "status": "pending",
+            "testStrategy": "Python ast, skan WYLACZNIE plikow .py w data_layer/metrics/. (1) Assert brak Import/ImportFrom odwolujacego sie do modulu facts_repo. (2) Assert brak Attribute node .get_facts_as_of ani .get_metric_series na dowolnym obiekcie. JAWNA LISTA WYJATKOW: zakres to WYLACZNIE data_layer/metrics/; assembler z 14.4 (np. data_layer/periods/) importuje FactsRepository z definicji i jest WYLACZONY ze skanu - inaczej test wywala sie na assemblerze i ktos rozluzni zakres, przez co granica przecieknie od drugiej strony. NIGDY nie skanuj katalogu assemblera. Zielony tylko gdy warstwa metryk nie ma ani importu facts_repo, ani wywolan metod PIT."
+          }
+        ]
+      },
+      {
+        "id": 15,
+        "title": "Implement ASC 606 Adoption Method Detection",
+        "description": "Extend FinancialPeriodAssembler to detect whether a company used full or modified retrospective adoption for ASC 606 revenue recognition standard. Flag series comparability accordingly.",
+        "details": "Add method `_detect_asc606_adoption()` to FinancialPeriodAssembler:\n\nDetection algorithm (BINARY, no thresholds per PRD):\n1. Identify transition year: first fiscal year where RevenueFromContractWithCustomer* tag appears\n2. In the transition year filing, check if NEW tag has values for periods BEFORE transition year\n   - YES -> FULL_RETROSPECTIVE (prior periods were restated)\n   - NO -> MODIFIED_RETROSPECTIVE (prior periods kept old tag)\n3. If both tags exist for same period: record BOTH values, flag ANY discrepancy (no magnitude threshold)\n4. Ambiguous cases -> UNKNOWN, treated as MODIFIED for safety\n\nSet `FinancialPeriod.adoption_method` based on detection.\nSet `is_comparable_to_prior = False` for the transition year if method is MODIFIED_RETROSPECTIVE or UNKNOWN.\n\nStore dual values when both old and new tags exist:\n```python\nif old_tag_value and new_tag_value:\n    items['revenue'] = LineItem(..., quality_flag=QualityFlag.PARTIAL)\n    items['revenue_asc605'] = LineItem(old_value, ...)\n    items['revenue_asc606'] = LineItem(new_value, ...)\n```\n\nNo threshold for discrepancy flagging - ANY difference between old and new tag gets recorded. Distribution analysis happens on golden set in T4, not in code.",
+        "testStrategy": "1. Test with known FULL_RETROSPECTIVE company: verify adoption_method=FULL_RETROSPECTIVE and is_comparable_to_prior=True across series\n2. Test with known MODIFIED_RETROSPECTIVE company: verify adoption_method=MODIFIED_RETROSPECTIVE and is_comparable_to_prior=False for transition year only\n3. Test dual-value capture: when both Revenues and RevenueFromContractWithCustomer* exist for same period, both are stored and flagged\n4. Test UNKNOWN handling: ambiguous case treated as modified (is_comparable_to_prior=False)\n5. Validate against golden set companies once F1 is complete",
+        "priority": "high",
+        "dependencies": [
+          14
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Define ASC 606 Adoption Enums and Data Structures",
+            "description": "Create enumeration types for adoption methods and extend FinancialPeriod dataclass with adoption-related fields.",
+            "dependencies": [],
+            "details": "Create AdoptionMethod enum with values: FULL_RETROSPECTIVE, MODIFIED_RETROSPECTIVE, UNKNOWN. Add fields to FinancialPeriod dataclass: adoption_method (AdoptionMethod | None), is_comparable_to_prior (bool). Define constants for ASC 606 tags (RevenueFromContractWithCustomer*) and legacy ASC 605 revenue tags. Ensure QualityFlag.PARTIAL is available for dual-value scenarios.",
+            "status": "pending",
+            "testStrategy": "Unit test that AdoptionMethod enum has exactly 3 values. Verify FinancialPeriod can be instantiated with new fields. Test that default values are sensible (None for adoption_method, True for is_comparable_to_prior)."
+          },
+          {
+            "id": 2,
+            "title": "Implement Transition Year Detection Logic",
+            "description": "Add logic to identify the transition year by finding the first fiscal year where RevenueFromContractWithCustomer* tags appear in filings.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement helper method _identify_transition_year() in FinancialPeriodAssembler. Scan filings chronologically to find first occurrence of ASC 606 revenue tags (RevenueFromContractWithCustomer, RevenueFromContractWithCustomerExcludingAssessedTax, etc.). Return the fiscal year as transition year. Handle edge cases: no ASC 606 tags found (pre-adoption company), tags found in all years (already transitioned). Cache result to avoid repeated scans.",
+            "status": "pending",
+            "testStrategy": "Test with filing data containing ASC 606 tags starting in 2018 - verify 2018 returned as transition year. Test with no ASC 606 tags - verify None returned. Test with ASC 606 tags in all periods - verify earliest year returned."
+          },
+          {
+            "id": 3,
+            "title": "Implement Adoption Method Detection Algorithm",
+            "description": "Metoda _detect_asc606_adoption() - kryterium BINARNE i OPERACYJNE (bez opisu, bez progu): wez accession 10-K za rok przejscia; sprawdz, czy w TYM SAMYM accession nowy tag (RevenueFromContractWithCustomer*) ma wartosci dla period_end WCZESNIEJSZYCH niz rok przejscia. Jest -> FULL_RETROSPECTIVE. Nie ma -> MODIFIED_RETROSPECTIVE. Niejednoznaczne -> UNKNOWN, traktowane jak modified. To jedno zapytanie na sec_facts, bez miejsca na interpretacje; automatycznie odrzuca recast w pozniejszym 10-K (np. FY2020), bo to inny accession. OGRANICZENIE IMPLEMENTACYJNE: detekcja MUSI operowac na poziomie accession w sec_facts, NIE na zdeduplikowanym widoku PIT z get_facts_as_of - deduplikacja po (tag, unit, period_start, period_end) gubi, z ktorego filingu pochodzi wartosc, czyli dokladnie informacje, na ktorej opiera sie cale kryterium.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "In _detect_asc606_adoption(): 1) Call _identify_transition_year() to get transition year. 2) In transition year filing, check if RevenueFromContractWithCustomer* tags have values for periods BEFORE transition year. 3) If YES -> return FULL_RETROSPECTIVE (prior periods restated). 4) If NO -> return MODIFIED_RETROSPECTIVE (prior periods kept old tag). 5) If detection is ambiguous (conflicting signals) -> return UNKNOWN. Document that UNKNOWN is treated as MODIFIED for safety in comparability flagging.",
+            "status": "pending",
+            "testStrategy": "Test FULL: accession 10-K roku przejscia zawiera nowy tag dla period_end sprzed przejscia -> FULL_RETROSPECTIVE. Test MODIFIED: ten sam accession nie ma nowego tagu dla okresow sprzed przejscia -> MODIFIED_RETROSPECTIVE. Test RECASTU: nowy tag dla starych okresow istnieje, ale w INNYM accession (np. FY2020 10-K) -> nadal MODIFIED (nie FULL), bo detekcja patrzy wylacznie na accession roku przejscia. Test niejednoznaczny -> UNKNOWN. Test REGRESYJNY: implementacja czytajaca get_facts_as_of (zdeduplikowany widok PIT) MUSI byc odrzucona - test weryfikuje, ze detekcja czyta surowe sec_facts na poziomie accession, nie widok."
+          },
+          {
+            "id": 4,
+            "title": "Implement Dual Value Storage for Overlapping Tags",
+            "description": "Gdy dla tego samego okresu istnieja oba tagi (ASC 605 i ASC 606), zapisz OBIE wartosci jako osobne LineItemy. quality_flag=PARTIAL ustawiany WYLACZNIE gdy wartosci sie ROZNIA - nie przy samym wspolistnieniu tagow. Bezwarunkowy PARTIAL uderzalby w kazdy rok nakladkowy kazdej spolki full-retrospective, a w F8 spolki z PARTIAL moga wypadac z bazy percentyla - to systematyczne wykluczanie calej klasy spolek, nie kosmetyka. Rozbieznosc flagowana niezaleznie od wielkosci (bez progu).",
+            "dependencies": [
+              1,
+              3
+            ],
+            "details": "When both old_tag_value and new_tag_value exist for same period: 1) Set items['revenue'] = LineItem(..., quality_flag=QualityFlag.PARTIAL). 2) Store items['revenue_asc605'] = LineItem(old_value, ...). 3) Store items['revenue_asc606'] = LineItem(new_value, ...). Flag ANY discrepancy between values (no magnitude threshold per PRD). Record both values regardless of whether they match - distribution analysis happens in T4 golden set, not in code.",
+            "status": "pending",
+            "testStrategy": "Test oba tagi, wartosci IDENTYCZNE -> obie zapisane, quality_flag=OK (NIE PARTIAL). Test oba tagi, wartosci ROZNE -> obie zapisane, quality_flag=PARTIAL, rozbieznosc zapisana. Test tylko jeden tag -> jeden LineItem, OK. Zadnego progu wielkosci rozbieznosci."
+          },
+          {
+            "id": 5,
+            "title": "Integrate Adoption Detection with FinancialPeriod Assembly",
+            "description": "Wire up adoption detection into FinancialPeriodAssembler flow and set is_comparable_to_prior flag based on adoption method for transition year.",
+            "dependencies": [
+              3,
+              4
+            ],
+            "details": "Integrate _detect_asc606_adoption() into FinancialPeriodAssembler.assemble() workflow. Set FinancialPeriod.adoption_method based on detection result. Set is_comparable_to_prior=False for transition year when method is MODIFIED_RETROSPECTIVE or UNKNOWN. Keep is_comparable_to_prior=True for FULL_RETROSPECTIVE (prior periods were restated). For non-transition years, is_comparable_to_prior follows normal logic. Ensure dual values from subtask 4 are properly included in assembled FinancialPeriod.",
+            "status": "pending",
+            "testStrategy": "End-to-end test with FULL_RETROSPECTIVE company: verify adoption_method set correctly and is_comparable_to_prior=True across all years. Test MODIFIED_RETROSPECTIVE company: verify is_comparable_to_prior=False only for transition year. Test UNKNOWN case treated as MODIFIED for safety."
+          }
+        ]
+      },
+      {
+        "id": 16,
+        "title": "Implement Fiscal Year Change and Stub Period Detection",
+        "description": "Extend FinancialPeriodAssembler to detect fiscal year changes (via 10-KT form or duration anomaly) and correctly flag stub periods. Only flow items are flagged; balance sheet items are unaffected.",
+        "details": "Add method `_detect_stub_period()` to FinancialPeriodAssembler:\n\nDetection signals (use BOTH, either triggers investigation):\n1. `period_end - period_start` outside 350-380 days for duration facts\n2. `form = '10-KT'` (transition period annual report)\n\nHandling:\n- When stub period detected, set `FinancialPeriod.is_stub_period = True`\n- ONLY flag FLOW items (those with period_start IS NOT NULL): revenue, ocf, net_income, etc.\n- DO NOT flag INSTANT items (period_start IS NULL): assets, liabilities, equity, cash, debt positions\n  - Balance sheet is point-in-time, independent of period length\n  - Flagging them creates false PARTIAL and pollutes percentiles\n\nYoY comparison rules (to be enforced in metrics layer):\n- YoY loses TWO comparisons: into stub period AND out of stub period\n- First comparable growth = second full year after change\n- Example: FY2019 (12mo) -> FY2020-stub (6mo) -> FY2020 (12mo) -> FY2021 (12mo)\n  - FY2020 growth vs FY2019: INVALID (comparing 12mo to 6mo)\n  - FY2021 growth vs FY2020: INVALID (stub period base)\n  - FY2022 growth vs FY2021: VALID (first comparable)\n\nStore duration metadata for downstream use:\n```python\nFinancialPeriod.stub_duration_days = actual_duration  # if stub\nFinancialPeriod.prior_fy_end_month = detected_old_fy_end  # for context\n```",
+        "testStrategy": "1. Test with company having 10-KT: verify is_stub_period=True only on period matching the transition\n2. Test that balance sheet items (Assets, Liabilities, Equity) are NOT flagged as stub even in stub period year\n3. Test that flow items (Revenue, OCF) ARE flagged as stub\n4. Test duration detection: 6-month period flagged, 12-month period not flagged\n5. Validate net debt at stub period end = OK (balance sheet), while revenue at stub = PARTIAL\n6. Test against golden set company with fiscal year change once F1 complete",
+        "priority": "medium",
+        "dependencies": [
+          14
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 17,
+        "title": "Implement Core Metrics Engine (Revenue Growth, Margins, FCF, Net Debt, Coverage)",
+        "description": "Build the core metrics calculation engine that consumes FinancialPeriod objects and produces validated metrics with derived tolerance from source precision. Includes mutation tests.",
+        "details": "Create `data_layer/metrics/core_metrics.py`:\n\n```python\nfrom .financial_period import FinancialPeriod, QualityFlag, LineItem\nfrom dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass MetricResult:\n    value: float | None\n    quality_flag: QualityFlag\n    inputs_json: str  # JSON of input values used\n    source_accessions: list[str]\n    tolerance: float  # derived from source precision\n\nclass CoreMetrics:\n    \"\"\"Metrics consume FinancialPeriod, NEVER FactsRepository directly.\"\"\"\n    \n    def revenue_growth_yoy(self, current: FinancialPeriod, prior: FinancialPeriod) -> MetricResult:\n        # Return INSUFFICIENT_DATA if either period missing revenue\n        # Return INSUFFICIENT_DATA if is_comparable_to_prior=False\n        # Return INSUFFICIENT_DATA if is_stub_period on either\n        \n    def gross_margin(self, period: FinancialPeriod) -> MetricResult:\n        # gross_profit / revenue OR (revenue - cogs) / revenue\n        # zero revenue -> INSUFFICIENT_DATA (not inf)\n        \n    def operating_margin(self, period: FinancialPeriod) -> MetricResult:\n        # operating_income / revenue\n        \n    def net_margin(self, period: FinancialPeriod) -> MetricResult:\n        # net_income / revenue\n        \n    def fcf(self, period: FinancialPeriod) -> MetricResult:\n        # ocf - capex\n        # Return SBC alongside for adjusted FCF variant\n        # Negative FCF is VALID (no clamping to 0)\n        \n    def net_debt(self, period: FinancialPeriod) -> MetricResult:\n        # (short_term_debt + long_term_debt + finance_lease) - (cash + short_term_investments)\n        # MUST include finance lease - this is mutation test #1\n        # MUST NOT double-count current portion of LT debt\n        \n    def interest_coverage(self, period: FinancialPeriod) -> MetricResult:\n        # operating_income / interest_expense\n        # zero interest -> return None with note (not inf)\n```\n\nTolerance derivation (REQUIRED, not optional):\n- Each LineItem records unit precision from source (millions vs exact XBRL)\n- Tolerance = half of last significant digit, PROPAGATED through formula\n- For exact XBRL: relative tolerance 1e-9\n- Example: revenue in millions ($61,137M) -> tolerance = $0.5M = $500K\n- FCF tolerance = sqrt(ocf_tol^2 + capex_tol^2)\n\nMUTATION TESTS (part of this task, must fail on golden set):\n1. Net debt WITHOUT finance lease -> test MUST fail\n2. LongTermDebt fallback without subtracting current portion -> test MUST fail\n3. Capex gross instead of net -> test MUST fail",
+        "testStrategy": "1. All metrics validated against golden set within derived tolerance bounds\n2. MUTATION TESTS: introduce 5 specific bugs (per Appendix), verify test suite catches ALL:\n   - Remove finance lease from net debt\n   - Use LongTermDebt fallback without current portion adjustment\n   - Use gross capex instead of net\n   - Reverse revenue tag priority order\n   - Exclude leases from invested capital (for ROIC task)\n3. Test zero revenue -> INSUFFICIENT_DATA for margins (not division by zero)\n4. Test negative FCF computed correctly (not clamped)\n5. Test that any missing component -> INSUFFICIENT_DATA for entire metric\n6. Test tolerance propagation: verify margin tolerance is correctly derived from revenue/profit tolerances",
+        "priority": "high",
+        "dependencies": [
+          14,
+          15,
+          16
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement MetricResult dataclass and tolerance propagation utilities",
+            "description": "Create the MetricResult frozen dataclass and utility functions for tolerance derivation and propagation through mathematical operations.",
+            "dependencies": [],
+            "details": "Create `data_layer/metrics/core_metrics.py` with:\n1. MetricResult dataclass with fields: value (float|None), quality_flag (QualityFlag), inputs_json (str), source_accessions (list[str]), tolerance (float)\n2. Tolerance derivation function: extract precision from LineItem source (millions vs exact XBRL)\n3. For exact XBRL values: relative tolerance = 1e-9\n4. For values in millions: tolerance = $0.5M (half of last significant digit)\n5. Tolerance propagation utilities:\n   - Addition/subtraction: sqrt(tol_a^2 + tol_b^2)\n   - Division: result * sqrt((tol_a/a)^2 + (tol_b/b)^2)\n6. Helper to serialize inputs to JSON for audit trail",
+            "status": "pending",
+            "testStrategy": "Unit test tolerance derivation: verify $61,137M revenue yields $0.5M tolerance. Test propagation: verify FCF tolerance = sqrt(ocf_tol^2 + capex_tol^2). Test exact XBRL values get 1e-9 relative tolerance."
+          },
+          {
+            "id": 2,
+            "title": "Implement margin metrics (gross, operating, net) with zero-revenue handling",
+            "description": "Implement gross_margin, operating_margin, and net_margin methods that consume FinancialPeriod objects and handle edge cases properly.",
+            "dependencies": [
+              1
+            ],
+            "details": "Add to CoreMetrics class:\n1. gross_margin(period: FinancialPeriod) -> MetricResult:\n   - Calculate as gross_profit/revenue OR (revenue - cogs)/revenue\n   - Return INSUFFICIENT_DATA if revenue is zero or None (NOT infinity)\n   - Propagate tolerance through division formula\n   - Record all input values in inputs_json\n2. operating_margin(period: FinancialPeriod) -> MetricResult:\n   - Calculate as operating_income/revenue\n   - Same zero-revenue handling\n3. net_margin(period: FinancialPeriod) -> MetricResult:\n   - Calculate as net_income/revenue\n   - Same zero-revenue handling\n4. All methods must collect source_accessions from input LineItems",
+            "status": "pending",
+            "testStrategy": "Test each margin with valid inputs against golden set within tolerance. Test zero revenue returns INSUFFICIENT_DATA (not inf). Test missing line items return INSUFFICIENT_DATA. Verify inputs_json contains all source values."
+          },
+          {
+            "id": 3,
+            "title": "Implement revenue_growth_yoy with comparability checks",
+            "description": "Implement year-over-year revenue growth calculation with proper handling of stub periods, comparability flags, and missing data.",
+            "dependencies": [
+              1
+            ],
+            "details": "Add to CoreMetrics class:\nrevenue_growth_yoy(current: FinancialPeriod, prior: FinancialPeriod) -> MetricResult:\n1. Return INSUFFICIENT_DATA if either period missing revenue\n2. Return INSUFFICIENT_DATA if current.is_comparable_to_prior=False (ASC 606 transition)\n3. Return INSUFFICIENT_DATA if is_stub_period=True on either period\n4. Calculate: (current_revenue - prior_revenue) / prior_revenue\n5. Handle zero prior revenue -> INSUFFICIENT_DATA\n6. Propagate tolerance through subtraction then division\n7. Record both period revenues and their accession numbers in inputs_json\n8. Collect source_accessions from both periods",
+            "status": "pending",
+            "testStrategy": "Test with comparable periods against golden set. Test stub period on current returns INSUFFICIENT_DATA. Test stub period on prior returns INSUFFICIENT_DATA. Test is_comparable_to_prior=False returns INSUFFICIENT_DATA. Test zero prior revenue returns INSUFFICIENT_DATA."
+          },
+          {
+            "id": 4,
+            "title": "Implement FCF, net_debt, and interest_coverage with mutation test requirements",
+            "description": "Implement free cash flow, net debt, and interest coverage metrics with specific attention to mutation test requirements for finance leases, current portion handling, and capex net vs gross.",
+            "dependencies": [
+              1
+            ],
+            "details": "Add to CoreMetrics class:\n1. fcf(period: FinancialPeriod) -> MetricResult:\n   - Calculate: ocf - capex (use NET capex, not gross)\n   - Negative FCF is VALID (no clamping to 0)\n   - Include SBC value in inputs_json for adjusted FCF variant\n   - Tolerance = sqrt(ocf_tol^2 + capex_tol^2)\n2. net_debt(period: FinancialPeriod) -> MetricResult:\n   - Calculate: (short_term_debt + long_term_debt + finance_lease) - (cash + short_term_investments)\n   - MUST include finance_lease (mutation test #1)\n   - MUST NOT double-count current portion of LT debt when using LongTermDebt fallback (mutation test #2)\n3. interest_coverage(period: FinancialPeriod) -> MetricResult:\n   - Calculate: operating_income / interest_expense\n   - Zero interest_expense -> return None with quality note (not infinity)",
+            "status": "pending",
+            "testStrategy": "Test FCF with negative values are preserved. Test net_debt includes finance_lease. Test LongTermDebt fallback subtracts current portion. Test interest_coverage with zero interest returns None. Validate all against golden set within tolerance."
+          },
+          {
+            "id": 5,
+            "title": "Implement mutation tests for net_debt and capex calculations",
+            "description": "Testy mutacyjne dowodzace, ze zestaw testow lapie konkretne bledy (mutant vs golden, wymagane czerwone). Mutacje: (1) pominiety leasing finansowy w net_debt; (2) fallback na LongTermDebt bez odjecia czesci biezacej; (3) capex brutto zamiast netto; (4) WYLACZONA detekcja metody adopcji ASC 606 - mutant wymusza FULL_RETROSPECTIVE niezaleznie od danych albo pomija propagacje is_comparable_to_prior. Na spolce z MODIFIED retrospective revenue_growth_yoy przez granice 2017->2018 musi wtedy zwrocic gola liczbe zamiast INSUFFICIENT_DATA i test ma sie wywalic. Chroniona wlasnosc: niemieszanie definicji ksiegowych w jednym szeregu. Kolejnosc tagow to tylko objaw - odwrocenie CORE_TAGS[revenue] NIC nie wykryje przy modified retro, bo kazdy rok ma tylko jeden tag. Mutacja (4) siedzi na styku #15 (detekcja adopcji) i 17.3 (growth); parent #17 juz zalezy od #15. UWAGA: mutacja leasingi-wylaczone-z-invested-capital NIE tutaj - nalezy do #20 (ROIC).",
+            "dependencies": [
+              4
+            ],
+            "details": "Create mutation test suite in `tests/mutations/test_core_metrics_mutations.py`:\n1. Mutation Test #1 - Net debt WITHOUT finance lease:\n   - Create mutant version of net_debt that omits finance_lease\n   - Run against golden set\n   - Test MUST FAIL (prove finance_lease is required)\n2. Mutation Test #2 - LongTermDebt fallback without current portion subtraction:\n   - Create mutant that uses raw LongTermDebt without subtracting current portion\n   - Run against golden set\n   - Test MUST FAIL (prove current portion handling is required)\n3. Mutation Test #3 - Capex gross instead of net:\n   - Create mutant FCF using gross capex\n   - Run against golden set\n   - Test MUST FAIL (prove net capex is required)\n4. Each mutation test should document which golden set company exposes the bug",
+            "status": "pending",
+            "testStrategy": "Dla kazdego mutanta: uruchom przeciw golden set i zweryfikuj CZERWONY test; udokumentuj, ktora spolka golden eksponuje ktora mutacje. Mutant (4) WYMAGA spolki z MODIFIED retrospective w golden secie (granica 2017->2018) - bez niej mutacja jest niewykrywalna, co samo w sobie jest wymogiem na golden set. Oryginalny (niemutowany) kod przechodzi wszystkie testy. Mutacje jawnie oznaczone i izolowane."
+          }
+        ]
+      },
+      {
+        "id": 18,
+        "title": "Create Golden Dataset Test Infrastructure",
+        "description": "Build the test infrastructure for golden dataset validation. This provides the framework for manually-transcribed filing data to be used as test oracles. Note: actual data transcription is MANUAL work, not automated.",
+        "details": "Create `tests/golden/` directory structure:\n\n```\ntests/golden/\n    __init__.py\n    conftest.py          # pytest fixtures for golden data\n    base.py              # GoldenCompany base class\n    tier1/               # 5 companies x 10 years + quarterly\n        aapl.py          # Example structure\n        msft.py\n        ...\n    tier2/               # 15 companies x 3 years (edge cases)\n        <ticker>.py\n    test_golden_validation.py  # Internal consistency tests\n```\n\nGoldenCompany base class:\n```python\n@dataclass\nclass GoldenValue:\n    value: float\n    unit_precision: str  # 'millions', 'thousands', 'exact'\n    source_url: str      # EDGAR filing URL\n    accession: str\n    page_or_note: str    # 'p.45' or 'Note 12'\n    \n    @property\n    def tolerance(self) -> float:\n        # Half of last digit based on unit_precision\n        if self.unit_precision == 'millions':\n            return 0.5e6\n        elif self.unit_precision == 'thousands':\n            return 0.5e3\n        else:  # exact\n            return abs(self.value) * 1e-9\n\nclass GoldenCompany:\n    ticker: str\n    cik: int\n    ff12_sector: str  # Must map cleanly to one of 6 different FF12 buckets\n    tier: Literal['tier1', 'tier2']\n    edge_cases: list[str]  # e.g., ['10-KT', 'negative_fcf', 'asc606_modified']\n    \n    def get_annual_facts(self, fiscal_year: int) -> dict[str, GoldenValue]: ...\n    def get_quarterly_facts(self, fiscal_year: int, quarter: int) -> dict[str, GoldenValue]: ...\n    def get_lease_payments(self, fiscal_year: int) -> dict[str, GoldenValue]: ...  # pre-2019 only\n```\n\nInternal validation tests (run on golden data BEFORE comparing to engine):\n1. assets = liabilities + equity (accounting identity)\n2. gross_profit = revenue - cogs (when both provided)\n3. net_income (income statement) = starting number (cash flow statement)\n4. For tier1: Q1 + Q2 + Q3 + derived_Q4 = FY\n\nThese tests catch transcription errors in the golden set itself.",
+        "testStrategy": "1. Run internal consistency tests on all golden data - must pass before any metric comparison\n2. Verify each golden company maps to exactly one FF12 sector\n3. Verify tier1 has quarterly data, tier2 does not require it\n4. Verify each GoldenValue has non-empty source_url and accession\n5. Verify tolerance derivation: millions -> 500K, thousands -> 500, exact -> 1e-9 relative",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create Golden Dataset Directory Structure and Base Module",
+            "description": "Set up the tests/golden/ directory structure with __init__.py, conftest.py, base.py, and tier1/tier2 subdirectories",
+            "dependencies": [],
+            "details": "Create the following directory structure:\n- tests/golden/__init__.py - Package initialization with load_all_golden_companies() function\n- tests/golden/conftest.py - pytest fixtures for loading golden data\n- tests/golden/base.py - Contains GoldenValue and GoldenCompany base classes\n- tests/golden/tier1/ - Directory for 5 companies x 10 years + quarterly data\n- tests/golden/tier2/ - Directory for 15 companies x 3 years (edge cases)\n\nThe __init__.py should export key classes and provide a discovery mechanism to find all golden company modules.",
+            "status": "pending",
+            "testStrategy": "Verify directory structure exists, all __init__.py files are importable, and the package can be imported without errors"
+          },
+          {
+            "id": 2,
+            "title": "Implement GoldenValue Dataclass with Tolerance Calculation",
+            "description": "Create the GoldenValue dataclass with value, unit_precision, source_url, accession, page_or_note fields and tolerance property",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement GoldenValue as a frozen dataclass in base.py:\n\n@dataclass(frozen=True)\nclass GoldenValue:\n    value: float\n    unit_precision: str  # 'millions', 'thousands', 'exact'\n    source_url: str      # EDGAR filing URL\n    accession: str\n    page_or_note: str    # 'p.45' or 'Note 12'\n    \n    @property\n    def tolerance(self) -> float:\n        if self.unit_precision == 'millions':\n            return 0.5e6\n        elif self.unit_precision == 'thousands':\n            return 0.5e3\n        else:  # exact\n            return abs(self.value) * 1e-9\n\nAdd validation to ensure unit_precision is one of the allowed values and source_url/accession are non-empty.",
+            "status": "pending",
+            "testStrategy": "Unit test tolerance calculation for each unit_precision type, verify validation rejects invalid unit_precision values, test that source_url and accession cannot be empty"
+          },
+          {
+            "id": 3,
+            "title": "Implement GoldenCompany Base Class with Data Access Methods",
+            "description": "Create the GoldenCompany base class with ticker, cik, ff12_sector, tier, edge_cases attributes and data access methods",
+            "dependencies": [
+              2
+            ],
+            "details": "Implement GoldenCompany as an abstract base class in base.py:\n\nclass GoldenCompany:\n    ticker: str\n    cik: int\n    ff12_sector: str  # Must map to one of 6 FF12 buckets\n    tier: Literal['tier1', 'tier2']\n    edge_cases: list[str]  # e.g., ['10-KT', 'negative_fcf', 'asc606_modified']\n    \n    @abstractmethod\n    def get_annual_facts(self, fiscal_year: int) -> dict[str, GoldenValue]: ...\n    \n    @abstractmethod\n    def get_quarterly_facts(self, fiscal_year: int, quarter: int) -> dict[str, GoldenValue]: ...\n    \n    @abstractmethod\n    def get_lease_payments(self, fiscal_year: int) -> dict[str, GoldenValue]: ...  # pre-2019 only\n\nInclude FF12_SECTORS constant with valid sector values. Add validation that ff12_sector maps to exactly one bucket.",
+            "status": "pending",
+            "testStrategy": "Test that abstract methods must be implemented by subclasses, verify ff12_sector validation rejects invalid sectors, test tier validation accepts only 'tier1' or 'tier2'"
+          },
+          {
+            "id": 4,
+            "title": "Create Example Golden Company Template (AAPL)",
+            "description": "Strukturalny SZABLON pliku golden company (aapl.py) w tier1/ - kilka PRZYKLADOWYCH wierszy pokazujacych format GoldenValue: wartosc + jednostka zaokraglenia + URL filingu + accession + nota. NIE pelna transkrypcja. Pelne 10 lat AAPL nalezy WYLACZNIE do zadania 25.1 (Tier 1). Bez tego rozgraniczenia ta sama praca reczna zostanie wykonana dwa razy, a wersje sie rozjada.",
+            "dependencies": [
+              3
+            ],
+            "details": "Tylko szkielet klasy + 2-3 przykladowe wiersze na pozycje pokazujace format. Zero pelnego przepisywania filingow tutaj - pelna transkrypcja to zadanie 25.1.",
+            "status": "pending",
+            "testStrategy": "Verify AAPL class can be instantiated, all required methods return proper dict[str, GoldenValue] structure, and the class passes FF12 sector validation"
+          },
+          {
+            "id": 5,
+            "title": "Implement Internal Consistency Validation Tests",
+            "description": "Create test_golden_validation.py with internal consistency tests to catch transcription errors in golden data before metric comparison",
+            "dependencies": [
+              3,
+              4
+            ],
+            "details": "Create tests/golden/test_golden_validation.py with the following validation tests:\n\n1. Accounting Identity Test:\n   - assets == liabilities + equity (within tolerance)\n\n2. Gross Profit Test:\n   - gross_profit == revenue - cogs (when both provided)\n\n3. Net Income Consistency Test:\n   - net_income from income statement == starting number on cash flow statement\n\n4. Quarterly Summation Test (tier1 only):\n   - Q1 + Q2 + Q3 + derived_Q4 == FY for flow items\n\n5. Metadata Validation:\n   - Each GoldenValue has non-empty source_url and accession\n   - Each company maps to exactly one FF12 sector\n   - Tier1 companies have quarterly data, tier2 may not\n\nUse pytest.mark.parametrize to run tests across all golden companies. These tests MUST pass before any metric comparison tests run.",
+            "status": "pending",
+            "testStrategy": "Run validation tests on the AAPL template to verify test infrastructure works, intentionally introduce transcription errors to verify tests catch them, verify tests fail gracefully with clear error messages indicating which company/year/field has the issue"
+          }
+        ]
+      },
+      {
+        "id": 19,
+        "title": "Implement Fama-French Sector Routing",
+        "description": "Build deterministic sector routing from SIC codes to Fama-French 12 industry classification. Exclude financials and REITs per project decision #3. Routing must be versioned and reproducible.",
+        "details": "Create `data_layer/sectors/ff_routing.py`:\n\nNote: This task BLOCKS on decision at T5 start: SIC -> FF12 vs SIC -> FF17 vs alternative mapping. Implement placeholder that raises NotImplementedError until decision is made.\n\n```python\nfrom enum import Enum\n\nclass FF12Sector(str, Enum):\n    CONSUMER_NONDURABLES = 'NoDur'\n    CONSUMER_DURABLES = 'Durbl'\n    MANUFACTURING = 'Manuf'\n    ENERGY = 'Enrgy'\n    CHEMICALS = 'Chems'\n    BUSINESS_EQUIPMENT = 'BusEq'  # includes tech\n    TELECOM = 'Telcm'\n    UTILITIES = 'Utils'\n    SHOPS = 'Shops'  # retail\n    HEALTHCARE = 'Hlth'\n    MONEY = 'Money'  # EXCLUDED - financials\n    OTHER = 'Other'\n    \n    # Additional exclusion\n    REIT = 'REIT'  # EXCLUDED\n\nROUTING_VERSION = '1.0.0'  # Increment on ANY change to mapping\n\ndef sic_to_ff12(sic: str) -> FF12Sector:\n    \"\"\"\n    Map SIC code to FF12 sector.\n    \n    DECISION POINT: This mapping must be confirmed at T5 start.\n    Reference: Kenneth French Data Library FF12 definitions.\n    \"\"\"\n    # Exclude financials (SIC 6000-6799) and REITs (SIC 6798)\n    sic_int = int(sic) if sic else 0\n    if 6000 <= sic_int <= 6799:\n        return FF12Sector.MONEY  # Will be filtered out\n    if sic_int == 6798:\n        return FF12Sector.REIT  # Will be filtered out\n        \n    # Standard FF12 mapping from French Data Library\n    # Consumer NonDurables: 0100-0999, 2000-2399, 2700-2749, 2770-2799, 3100-3199, 3940-3989\n    # ... (full mapping from French's documentation)\n    \ndef is_excluded(sector: FF12Sector) -> bool:\n    return sector in (FF12Sector.MONEY, FF12Sector.REIT)\n    \ndef get_routing_version() -> str:\n    return ROUTING_VERSION\n```\n\nStore sector assignment in securities table (already has sector column).\nMapping must be:\n- DETERMINISTIC: same SIC always -> same sector\n- VERSIONED: any change increments ROUTING_VERSION\n- DOCUMENTED: source reference to French Data Library",
+        "testStrategy": "1. Test exclusion: SIC codes 6000-6799 -> MONEY, SIC 6798 -> REIT\n2. Test determinism: same SIC code produces same result across multiple calls\n3. Test version: ROUTING_VERSION is exposed and documented\n4. Test golden set: verify all 20 golden companies map CLEANLY to 6 DIFFERENT FF12 sectors (requirement from PRD)\n5. Test that is_excluded() correctly identifies financials and REITs",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 20,
+        "title": "Implement ROIC Calculation with Lease Capitalization",
+        "description": "Calculate Return on Invested Capital with proper handling of operating leases (ASC 842), goodwill variants, and excess cash. Pre-2019 requires manual lease payment capitalization.",
+        "details": "Create `data_layer/metrics/roic.py`:\n\n```python\n@dataclass(frozen=True)\nclass ROICParameters:\n    \"\"\"Explicit model choices - recorded with every calculation.\"\"\"\n    include_goodwill: bool = True\n    excess_cash_method: Literal['none', 'above_threshold', 'all_investments'] = 'above_threshold'\n    excess_cash_threshold_pct: float = 0.02  # 2% of revenue\n    capitalize_pre842_leases: bool = True\n    discount_rate_for_leases: float = 0.05  # 5% for PV of future minimums\n\nclass ROICCalculator:\n    def nopat(self, period: FinancialPeriod) -> MetricResult:\n        # NOPAT = operating_income * (1 - effective_tax_rate)\n        # effective_tax_rate = tax_expense / pretax_income\n        # Handle negative NOPAT correctly (don't return INSUFFICIENT_DATA)\n        \n    def invested_capital(self, period: FinancialPeriod, params: ROICParameters) -> MetricResult:\n        # Base: equity + total_debt + operating_lease_liability\n        # Plus ROU asset (OperatingLeaseRightOfUseAsset) for consistency\n        # Minus excess_cash based on params.excess_cash_method\n        # Goodwill in/out based on params.include_goodwill\n        \n        # PRE-2019 HANDLING (critical):\n        # - OperatingLeaseLiability* tags DO NOT EXIST before ASC 842\n        # - Must use manually transcribed future minimum lease payments from golden set\n        # - Capitalize using PV at params.discount_rate_for_leases\n        # - Flag years without capitalization as INCOMPARABLE\n        \n    def roic(self, period: FinancialPeriod, params: ROICParameters) -> MetricResult:\n        # ROIC = NOPAT / Invested_Capital\n        # Record ALL parameters in inputs_json for reproducibility\n        # Years without lease correction flagged as non-comparable to post-2019\n\n    def _capitalize_lease_payments(self, future_minimums: dict[str, float], rate: float) -> float:\n        # PV calculation for years 1-5 + thereafter\n        # future_minimums from golden set (manually transcribed from filing notes)\n```\n\nKEY CONSTRAINT: ROIC for lease-heavy retailer pre-2019 is the HARD test case.\n- Must use golden set lease payments (cannot be automated - not in XBRL)\n- Invested capital without lease capitalization -> ROIC artificially high\n- This produces artifact of \"ROIC improving in 2019\" if not corrected\n\nParameters are EXPLICIT and recorded. No hidden defaults.",
+        "testStrategy": "1. HARD TEST: Lease-heavy retailer (e.g., retail company) FY2018 - ROIC must match golden set EXACTLY when using same parameters\n2. Test that AAPL FY2023 (post-ASC842, lease-light) matches golden as sanity check\n3. MUTATION TEST: Remove lease capitalization from invested capital -> test MUST FAIL on retailer\n4. Test negative NOPAT calculated correctly (not INSUFFICIENT_DATA)\n5. Test that pre-2019 periods without lease data -> flagged as incomparable\n6. Test that all model parameters are recorded in inputs_json\n7. Verify invested capital includes ROU asset (OperatingLeaseRightOfUseAsset) for balance",
+        "priority": "high",
+        "dependencies": [
+          13,
+          14,
+          17,
+          18,
+          "25"
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement ROICParameters dataclass and core structure",
+            "description": "ROICParameters (frozen) - jawne wybory modelowe: goodwill in/out, metoda excess cash oraz METODA WYPROWADZENIA stopy dyskontowej leasingow (nie sama liczba) plus wartosc fallbacku. Stopa NIE jest zaszyta - wyprowadzana wg hierarchii (patrz 20.3). ROICParameters trzyma metode i fallback; konkretna uzyta stopa i jej zrodlo laduja w inputs_json kazdego wyniku. Wszystkie wybory zapisywalne do JSON dla audytu.",
+            "dependencies": [],
+            "details": "Create `data_layer/metrics/roic.py` with the ROICParameters dataclass containing: include_goodwill (bool, default True), excess_cash_method (Literal['none', 'above_threshold', 'all_investments'], default 'above_threshold'), excess_cash_threshold_pct (float, default 0.02), capitalize_pre842_leases (bool, default True), and discount_rate_for_leases (float, default 0.05). Use @dataclass(frozen=True) to ensure immutability. Add comprehensive docstrings explaining each parameter's impact on the calculation.",
+            "status": "pending",
+            "testStrategy": "Unit test that ROICParameters is immutable (frozen), test default values match specification, test that all Literal types only accept valid values, verify dataclass can be serialized to JSON for audit trail."
+          },
+          {
+            "id": 2,
+            "title": "Implement NOPAT calculation method",
+            "description": "Implement the nopat() method in ROICCalculator to calculate Net Operating Profit After Tax with proper handling of negative values and edge cases.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement ROICCalculator.nopat(period: FinancialPeriod) -> MetricResult. Calculate NOPAT = operating_income * (1 - effective_tax_rate) where effective_tax_rate = tax_expense / pretax_income. Handle edge cases: (1) negative pretax_income should use absolute value for tax rate calculation, (2) negative NOPAT should be returned as valid result NOT INSUFFICIENT_DATA, (3) missing operating_income or tax data should return INSUFFICIENT_DATA with appropriate quality flags. Record all input values in MetricResult.inputs_json.",
+            "status": "pending",
+            "testStrategy": "Test positive NOPAT calculation matches expected formula, test negative NOPAT is returned correctly (not INSUFFICIENT_DATA), test effective tax rate calculation with negative pretax income, test INSUFFICIENT_DATA returned when required fields missing, verify inputs_json contains all calculation inputs."
+          },
+          {
+            "id": 3,
+            "title": "Implement lease payment capitalization for pre-ASC 842 periods",
+            "description": "Kapitalizacja leasingow sprzed 2019: present value przyszlych minimalnych platnosci leasingowych z golden setu (dyskontowanie, NIE 8x czynsz). Stopa dyskontowa WYPROWADZANA wg hierarchii zrodel, nie stala: (1) UJAWNIONA przez spolke - po 2019 firmy podaja weighted-average discount rate w nocie leasingowej; dla lat 2015-2018 tej samej spolki to najlepsze przyblizenie, quality_flag=OK; (2) WYPROWADZONA z wlasnego dlugu - interest_expense / sredni dlug brutto, quality_flag=OK; (3) FALLBACK staly - dopiero gdy oba zawioda, jawnie quality_flag=PARTIAL, wartosc zapisana w inputs_json. Uzasadnienie: ASC 842 definiuje stope jako incremental borrowing rate, wiec ta sama definicja przed 2019 daje spojnosc szeregu przez granice; rozna stopa po obu stronach 2019 wyprodukuje ten sam artefaktowy skok ROIC, przed ktorym broni 20.4.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement ROICCalculator._capitalize_lease_payments(future_minimums: dict[str, float], rate: float) -> float. The future_minimums dict contains keys for years 1-5 and 'thereafter'. Calculate PV: sum of (payment_year_n / (1 + rate)^n) for years 1-5, plus thereafter amount discounted at year 5 rate (conservative assumption). This data comes from golden set (manually transcribed from 10-K footnotes) since pre-ASC 842 lease data is NOT in XBRL. Add validation that future_minimums has expected structure.",
+            "status": "pending",
+            "testStrategy": "Test PV vs recznie policzona wartosc golden przy DOKLADNIE tej samej stopie i tym samym zrodle. Test hierarchii: nota leasingowa podaje rate -> uzyta, quality_flag=OK; brak noty ale jest dlug -> rate = interest_expense/avg gross debt, OK; oba brak -> fallback + PARTIAL + zapis w inputs_json. Test zerowej kwoty thereafter. ZADNEGO progu procentowego ani zaszytej 0.05 poza jawnym fallbackiem. Golden set liczy PV przy tej samej stopie i zrodle."
+          },
+          {
+            "id": 4,
+            "title": "Implement invested capital calculation with ASC 842 handling",
+            "description": "Implement the invested_capital() method with proper handling of operating leases for both pre and post ASC 842 periods, goodwill variants, and excess cash adjustments.",
+            "dependencies": [
+              1,
+              3
+            ],
+            "details": "Implement ROICCalculator.invested_capital(period: FinancialPeriod, params: ROICParameters) -> MetricResult. Base calculation: equity + total_debt + operating_lease_liability + ROU_asset. Apply adjustments: (1) Subtract excess_cash based on params.excess_cash_method - 'none' keeps all cash, 'above_threshold' subtracts cash above revenue * threshold_pct, 'all_investments' subtracts cash and short-term investments. (2) Add/remove goodwill based on params.include_goodwill. (3) PRE-2019 CRITICAL: Check if OperatingLeaseLiability tags exist - if not and capitalize_pre842_leases=True, use _capitalize_lease_payments() with golden set data. Flag periods without lease capitalization as INCOMPARABLE in quality_flags. Record all parameters and intermediate values in inputs_json.",
+            "status": "pending",
+            "testStrategy": "Test post-ASC 842 calculation uses XBRL lease tags directly, test pre-2019 calculation uses capitalized lease payments from golden set, test INCOMPARABLE flag set when pre-2019 without lease data, test each excess_cash_method produces correct adjustment, test goodwill inclusion/exclusion, test lease-heavy retailer FY2018 matches golden set exactly."
+          },
+          {
+            "id": 5,
+            "title": "Implement ROIC calculation with full parameter recording",
+            "description": "Implement the main roic() method that combines NOPAT and invested capital with complete parameter recording for reproducibility and comparability flagging.",
+            "dependencies": [
+              2,
+              4
+            ],
+            "details": "Implement ROICCalculator.roic(period: FinancialPeriod, params: ROICParameters) -> MetricResult. Calculate ROIC = NOPAT / Invested_Capital. Handle edge cases: (1) negative invested capital should return INSUFFICIENT_DATA, (2) zero invested capital should return INSUFFICIENT_DATA, (3) propagate quality flags from both NOPAT and invested_capital results. Record ALL ROICParameters values in inputs_json for full reproducibility. Add INCOMPARABLE flag for years without proper lease correction compared to post-2019 periods. Ensure the 'ROIC improving in 2019' artifact is prevented by proper lease capitalization.",
+            "status": "pending",
+            "testStrategy": "HARD TEST: Lease-heavy retailer FY2018 ROIC must match golden set EXACTLY with same parameters. Test AAPL FY2023 (post-ASC842, lease-light) matches golden as sanity check. MUTATION TEST: Remove lease capitalization -> test MUST FAIL showing artificially high pre-2019 ROIC. Verify all parameters recorded in inputs_json. Test INCOMPARABLE flag propagation."
+          }
+        ]
+      },
+      {
+        "id": 21,
+        "title": "Implement Sector Percentile Calculation Engine",
+        "description": "Calculate percentile rankings within FF12 sector groups. Handle minimum bucket size, exclude INSUFFICIENT_DATA companies, and flag non-comparable values.",
+        "details": "Create `data_layer/factors/percentiles.py`:\n\n```python\n@dataclass(frozen=True)\nclass PercentileConfig:\n    method: Literal['rank', 'interpolated'] = 'rank'\n    tie_handling: Literal['average', 'min', 'max', 'ordinal'] = 'average'\n    min_bucket_size: int  # DECISION at T5 start - block until set\n    universe_note: str  # Document limitations (e.g., 'golden-20 substitute')\n\n@dataclass(frozen=True)\nclass PercentileResult:\n    percentile: float | None  # None if INSUFFICIENT_DATA\n    quality_flag: QualityFlag\n    sector: FF12Sector\n    bucket_size: int  # How many companies in comparison group\n    universe_as_of: date\n    universe_limitation: str  # 'golden-20 substitute, not full PIT membership'\n    config: PercentileConfig\n\nclass SectorPercentiles:\n    def __init__(self, config: PercentileConfig):\n        self.config = config\n        \n    def calculate(self, \n                  cik: int,\n                  metric_name: str,\n                  metric_value: MetricResult,\n                  sector: FF12Sector,\n                  peer_values: list[tuple[int, MetricResult]],  # (cik, value) pairs\n                  as_of_date: date) -> PercentileResult:\n        \n        # Filter out INSUFFICIENT_DATA from peers\n        valid_peers = [(c, v) for c, v in peer_values \n                       if v.quality_flag != QualityFlag.INSUFFICIENT_DATA]\n        \n        # Check minimum bucket size\n        if len(valid_peers) < self.config.min_bucket_size:\n            return PercentileResult(\n                percentile=None,\n                quality_flag=QualityFlag.INSUFFICIENT_DATA,\n                sector=sector,\n                bucket_size=len(valid_peers),\n                ...\n            )\n        \n        # For ROIC: exclude non-comparable values (pre-ASC842 without correction)\n        # Implementation depends on how MetricResult flags comparability\n        \n        # Calculate percentile using configured method and tie handling\n        # DETERMINISTIC: same inputs always produce same percentile\n```\n\nUNIVERSUM LIMITATIONS (must be documented in every result):\n- T5-T6 scope: use golden-20 OR currently-active SEC companies as SUBSTITUTE\n- NOT full PIT membership (requires PIT prices, deferred to T7)\n- Survivorship bias present - documented, not hidden\n\nMin bucket size: DECISION at T5 start after seeing bucket distribution. Task blocks until decided.",
+        "testStrategy": "1. Test that company with INSUFFICIENT_DATA is excluded from peer group (removing it doesn't change others' percentiles)\n2. Test minimum bucket size: bucket with N-1 companies -> INSUFFICIENT_DATA\n3. Test determinism: same inputs produce identical percentile across multiple runs\n4. Test tie handling: verify configured method (average/min/max) is applied correctly\n5. Test ROIC comparability: pre-ASC842 values without lease correction excluded from post-2019 comparison\n6. Verify universe_limitation is populated in every result\n7. Test that excluded sectors (MONEY, REIT) are never included in calculations",
+        "priority": "medium",
+        "dependencies": [
+          17,
+          19,
+          20
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Define PercentileConfig and PercentileResult Data Classes",
+            "description": "Create the core data structures for percentile configuration and results in data_layer/factors/percentiles.py",
+            "dependencies": [],
+            "details": "Implement frozen dataclasses for PercentileConfig (method, tie_handling, min_bucket_size, universe_note) and PercentileResult (percentile, quality_flag, sector, bucket_size, universe_as_of, universe_limitation, config). Import FF12Sector from Task 19's ff_routing module and QualityFlag from existing types. Ensure min_bucket_size has a placeholder that raises NotImplementedError until the T5 decision is made. Add docstrings documenting universe limitations including golden-20 substitute scope and survivorship bias.",
+            "status": "pending",
+            "testStrategy": "Unit test that dataclasses are frozen (immutable). Test that PercentileConfig raises NotImplementedError if min_bucket_size is not set. Verify all required fields are present and properly typed."
+          },
+          {
+            "id": 2,
+            "title": "Implement Peer Value Filtering Logic",
+            "description": "Build the filtering mechanism to exclude INSUFFICIENT_DATA companies and non-comparable values from peer groups",
+            "dependencies": [
+              1
+            ],
+            "details": "Create a private method _filter_valid_peers() in SectorPercentiles class that takes peer_values list[tuple[int, MetricResult]] and returns filtered list. Filter out peers where MetricResult.quality_flag == QualityFlag.INSUFFICIENT_DATA. For ROIC specifically, exclude non-comparable values (pre-ASC842 without correction) based on MetricResult comparability flags. Document filtering decisions in code comments for audit trail.",
+            "status": "pending",
+            "testStrategy": "Test that peers with INSUFFICIENT_DATA are excluded. Test that removing INSUFFICIENT_DATA peer doesn't change other peers' relative positions. Test ROIC-specific filtering for non-comparable pre-ASC842 values."
+          },
+          {
+            "id": 3,
+            "title": "Implement Minimum Bucket Size Validation",
+            "description": "Add bucket size checking logic that returns INSUFFICIENT_DATA when peer group is too small",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "In SectorPercentiles.calculate(), after filtering valid peers, check if len(valid_peers) < self.config.min_bucket_size. If true, return PercentileResult with percentile=None, quality_flag=QualityFlag.INSUFFICIENT_DATA, and actual bucket_size. Include universe_limitation string documenting why calculation was not possible. This ensures statistical validity of percentile rankings.",
+            "status": "pending",
+            "testStrategy": "Test bucket with exactly min_bucket_size-1 companies returns INSUFFICIENT_DATA. Test bucket with exactly min_bucket_size companies proceeds to calculation. Test that bucket_size in result reflects actual filtered peer count."
+          },
+          {
+            "id": 4,
+            "title": "Implement Percentile Calculation with Tie Handling",
+            "description": "Build the core percentile calculation engine supporting rank and interpolated methods with configurable tie handling",
+            "dependencies": [
+              1,
+              2,
+              3
+            ],
+            "details": "Implement _calculate_percentile() method supporting method='rank' (simple rank-based) and method='interpolated' (linear interpolation). Support tie_handling options: 'average' (mean rank for ties), 'min' (lowest rank), 'max' (highest rank), 'ordinal' (arbitrary but deterministic order). Use scipy.stats.percentileofscore or implement pure Python equivalent for determinism. Ensure same inputs ALWAYS produce identical output - use sorted() with stable key for deterministic ordering.",
+            "status": "pending",
+            "testStrategy": "Test determinism: same inputs produce identical percentile across 100 runs. Test each tie_handling mode with known tied values. Test rank vs interpolated methods produce expected differences. Test edge cases: single company, all same values."
+          },
+          {
+            "id": 5,
+            "title": "Integrate SectorPercentiles.calculate() with Universe Documentation",
+            "description": "Metoda calculate() spina komponenty i zapewnia, ze ograniczenie uniwersum jest udokumentowane w kazdym wyniku (universe_limitation nigdy puste). EGZEKUCJA, nie tylko dokumentacja: uniwersum / peer set przychodzi jako JAWNY ARGUMENT do calculate(); funkcja NIE wywoluje niczego, co zwraca dzisiejszy sklad (zaden live query po aktywne spolki, zaden globalny stan uniwersum). Ta sama logika co import-ban z 14.5 - udokumentowanie ograniczenia to nie to samo, co brak dostepu do dzisiejszego skladu.",
+            "dependencies": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "details": "Implement the full SectorPercentiles.calculate() method that: 1) Filters peers using _filter_valid_peers(), 2) Validates bucket size, 3) Calculates percentile using configured method, 4) Returns PercentileResult with all fields populated including universe_limitation string (e.g., 'golden-20 substitute, not full PIT membership'). Always include universe_as_of date and config reference. Add class-level docstring documenting T5-T6 scope limitations and survivorship bias presence.",
+            "status": "pending",
+            "testStrategy": "Integration test z golden-20 w wielu sektorach. universe_limitation nigdy puste. as_of_date poprawnie propagowane. TEST EGZEKUCJI (analogiczny do import-ban z 14.5): statyczna analiza kodu - calculate() ani jego wywolania nie siegaja po zrodlo dzisiejszego skladu uniwersum (brak wywolan zwracajacych dzisiejsze aktywne spolki, brak globalnego stanu uniwersum); jedynym zrodlem peerow jest jawny argument. Pelny workflow od surowych peer values do PercentileResult."
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "title": "Build Metrics Persistence Layer with Traceability",
+        "description": "Implement storage and retrieval of calculated metrics with full traceability (inputs_json, source_accessions, code_sha). Enforce NOT NULL constraints per schema.",
+        "details": "Create `data_layer/metrics/persistence.py`:\n\n```python\nimport hashlib\nimport json\nfrom datetime import date\n\ndef get_code_sha() -> str:\n    \"\"\"SHA of current metrics module for reproducibility.\"\"\"\n    # Hash the source files in data_layer/metrics/\n    \nclass MetricsPersistence:\n    def __init__(self, con: duckdb.DuckDBPyConnection):\n        self.con = con\n        \n    def save_metric(self, \n                    cik: int,\n                    as_of_date: date,  # POSITIONAL, no default\n                    name: str,\n                    result: MetricResult) -> None:\n        # Validate NOT NULL constraints per schema.sql:\n        # inputs_json NOT NULL - from MetricResult.inputs_json\n        # source_accessions NOT NULL - from MetricResult.source_accessions\n        # code_sha NOT NULL - from get_code_sha()\n        \n        if not result.inputs_json:\n            raise ValueError('inputs_json is required for traceability (§3.3)')\n        if not result.source_accessions:\n            raise ValueError('source_accessions is required for traceability (§3.3)')\n            \n        self.con.execute(\"\"\"\n            INSERT INTO metrics \n            (cik, as_of_date, name, value, unit, quality_flag, \n             inputs_json, source_accessions, code_sha)\n            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ON CONFLICT (cik, as_of_date, name) DO UPDATE SET\n                value = excluded.value,\n                quality_flag = excluded.quality_flag,\n                inputs_json = excluded.inputs_json,\n                source_accessions = excluded.source_accessions,\n                code_sha = excluded.code_sha,\n                computed_at = current_timestamp\n        \"\"\", [cik, as_of_date, name, result.value, result.unit,\n              result.quality_flag.value, result.inputs_json,\n              ','.join(result.source_accessions), get_code_sha()])\n              \n    def get_metric(self, cik: int, as_of_date: date, name: str) -> MetricResult | None:\n        # Retrieve with full traceability metadata\n        \n    def get_metric_history(self, cik: int, name: str, as_of_date: date) -> list[MetricResult]:\n        # All historical values for metric up to as_of_date\n        # as_of_date is REQUIRED (no default)\n```\n\nThis enforces §3.3 (Traceability) from CLAUDE.md: every metric must have inputs_json + source_accessions + code_sha.",
+        "testStrategy": "1. Test that saving metric without inputs_json raises ValueError\n2. Test that saving metric without source_accessions raises ValueError\n3. Test that code_sha is automatically populated and non-empty\n4. Test that as_of_date is required (no default value)\n5. Test round-trip: save metric, retrieve, verify all fields match\n6. Test that metrics table NOT NULL constraints are satisfied\n7. Test update: re-saving same (cik, as_of_date, name) updates existing record",
+        "priority": "medium",
+        "dependencies": [
+          17
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 23,
+        "title": "Create Integration Tests Against Golden Dataset",
+        "description": "Build the integration test suite that validates all metrics against the golden dataset. Tests enforce tolerance bounds and verify mutation tests catch known bugs.",
+        "details": "Create `tests/test_metrics_vs_golden.py`:\n\n```python\nimport pytest\nfrom tests.golden import load_all_golden_companies\nfrom data_layer.metrics import CoreMetrics, ROICCalculator\nfrom data_layer.metrics.financial_period import FinancialPeriodAssembler\n\nclass TestMetricsVsGolden:\n    @pytest.fixture\n    def golden_companies(self):\n        return load_all_golden_companies()\n    \n    @pytest.mark.parametrize('company,fiscal_year', \n                             generate_golden_test_cases())  # All 20 x their years\n    def test_revenue_growth(self, company, fiscal_year, assembler, metrics):\n        period = assembler.get_period(company.cik, fiscal_year, as_of_date=...)\n        prior = assembler.get_period(company.cik, fiscal_year-1, as_of_date=...)\n        \n        result = metrics.revenue_growth_yoy(period, prior)\n        expected = company.get_annual_facts(fiscal_year).get('revenue_growth')\n        \n        if expected:\n            assert abs(result.value - expected.value) <= expected.tolerance\n        \n    # Similar tests for: gross_margin, operating_margin, net_margin, \n    # fcf, net_debt, interest_coverage, roic\n    \nclass TestMutationDetection:\n    \"\"\"Verify that intentional bugs are caught by the test suite.\"\"\"\n    \n    def test_mutation_net_debt_missing_finance_lease(self):\n        # Inject bug: remove finance lease from net_debt\n        # Verify test_net_debt FAILS on golden set\n        \n    def test_mutation_double_count_lt_debt_current(self):\n        # Inject bug: use LongTermDebt fallback without excluding current portion\n        # Verify test_net_debt FAILS\n        \n    def test_mutation_gross_capex(self):\n        # Inject bug: use gross capex instead of net\n        # Verify test_fcf FAILS\n        \n    def test_mutation_roic_no_lease_capitalization(self):\n        # Inject bug: exclude operating leases from invested capital\n        # Verify test_roic FAILS on lease-heavy retailer\n        \n    def test_mutation_reversed_revenue_tags(self):\n        # Inject bug: reverse priority order of revenue tags\n        # Verify test_revenue FAILS on ASC 606 transition company\n\nclass TestEdgeCases:\n    def test_negative_fcf(self): ...\n    def test_zero_revenue_margin(self): ...\n    def test_ipo_short_history(self): ...\n    def test_stub_period_yoy(self): ...\n    def test_asc606_modified(self): ...\n    def test_asc842_pre_post(self): ...\n```\n\nTest structure:\n1. Parametrized tests for all 20 companies across their golden years\n2. Mutation tests that MUST fail when bugs are injected\n3. Edge case tests for each required scenario from PRD Appendix",
+        "testStrategy": "1. All 20 golden companies pass metric tests within derived tolerance\n2. All 5 mutation tests fail when bug is injected (proving tolerance catches errors)\n3. All edge cases covered: negative FCF, zero revenue, IPO, stub period, ASC 606/842\n4. Test that INSUFFICIENT_DATA is returned (not error) for missing components\n5. CI integration: these tests run as part of normal pytest suite",
+        "priority": "high",
+        "dependencies": [
+          17,
+          18,
+          20,
+          "16",
+          "25",
+          "26"
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create Test File Structure and Core Fixtures",
+            "description": "Set up the test file `tests/test_metrics_vs_golden.py` with necessary imports, fixtures, and helper functions for loading golden data and generating test cases.",
+            "dependencies": [],
+            "details": "Create the main test file with:\n1. Import statements for pytest, golden data loaders, CoreMetrics, ROICCalculator, and FinancialPeriodAssembler\n2. `@pytest.fixture` for `golden_companies` that calls `load_all_golden_companies()`\n3. `@pytest.fixture` for `assembler` that creates FinancialPeriodAssembler instance\n4. `@pytest.fixture` for `metrics` that creates CoreMetrics instance\n5. Helper function `generate_golden_test_cases()` that yields (company, fiscal_year) tuples for all 20 companies across their golden years\n6. Helper function to compare results within tolerance bounds: `assert_within_tolerance(result, expected)`",
+            "status": "pending",
+            "testStrategy": "Verify fixtures load correctly by running `pytest --collect-only` to ensure test discovery works and fixtures are recognized. Confirm `generate_golden_test_cases()` produces expected number of test cases (20 companies × their respective years)."
+          },
+          {
+            "id": 2,
+            "title": "Implement TestMetricsVsGolden Parametrized Tests",
+            "description": "Parametryzowane testy walidujace metryki core (revenue_growth, gross/op/net margin, fcf, net_debt, interest_coverage, roic) przeciw golden setowi w granicach wyprowadzonej tolerancji. Brakujaca WYMAGANA wartosc golden -> FAIL (nie skip, nie log). Skip DOZWOLONY wylacznie dla pozycji zadeklarowanej w golden secie jako oczekiwanie-nieobecna (per spolka-rok, z nota ze sprawozdania - biala lista wyprowadzona, patrz #26); brak deklaracji = FAIL. Uruchamiane dopiero po przejsciu preconditionu 23.6.",
+            "dependencies": [
+              1,
+              6
+            ],
+            "details": "Create `TestMetricsVsGolden` class with:\n1. `test_revenue_growth` - parametrized test comparing calculated YoY revenue growth against golden values\n2. `test_gross_margin` - validate gross margin calculation\n3. `test_operating_margin` - validate operating margin calculation\n4. `test_net_margin` - validate net margin calculation\n5. `test_fcf` - validate free cash flow calculation\n6. `test_net_debt` - validate net debt calculation\n7. `test_interest_coverage` - validate interest coverage ratio\n8. `test_roic` - validate ROIC calculation using ROICCalculator\n\nEach test should:\n- Use `@pytest.mark.parametrize('company,fiscal_year', generate_golden_test_cases())`\n- Fetch periods using assembler with appropriate as_of_date\n- Compare result.value against expected.value within expected.tolerance\n- Skip gracefully if expected value is None (not all metrics available for all years)",
+            "status": "pending",
+            "testStrategy": "Wszystkie 20 spolek w tolerancji. Brakujaca wymagana wartosc -> FAIL. ROZROZNIENIE KATEGORII w komunikacie KAZDEGO FAIL: ENGINE_WRONG (silnik liczy zle -> napraw kod) vs GOLDEN_MISSING (golden nie pokrywa przypadku -> wroc do EDGAR). Bez rozroznienia pierwsza reakcja na czerwona bramke to debugowanie poprawnego kodu. Skip tylko dla zadeklarowanych N/A z nota."
+          },
+          {
+            "id": 3,
+            "title": "Implement TestMutationDetection Class",
+            "description": "Create mutation tests that verify the test suite catches known bugs by intentionally injecting errors and confirming tests fail appropriately.",
+            "dependencies": [
+              1,
+              2,
+              6
+            ],
+            "details": "Create `TestMutationDetection` class with 5 mutation tests:\n1. `test_mutation_net_debt_missing_finance_lease` - Inject bug removing finance lease from net_debt calculation, verify test_net_debt fails on golden set\n2. `test_mutation_double_count_lt_debt_current` - Inject bug using LongTermDebt fallback without excluding current portion, verify test_net_debt fails\n3. `test_mutation_gross_capex` - Inject bug using gross capex instead of net, verify test_fcf fails\n4. `test_mutation_roic_no_lease_capitalization` - Inject bug excluding operating leases from invested capital, verify test_roic fails on lease-heavy retailer (e.g., retail company in golden set)\n5. `test_mutation_reversed_revenue_tags` - Inject bug reversing priority order of revenue tags, verify test_revenue fails on ASC 606 transition company\n\nUse `pytest.raises` or `pytest.xfail` patterns to assert that the mutated calculation produces values outside tolerance bounds.",
+            "status": "pending",
+            "testStrategy": "Each mutation test must FAIL when the bug is injected (proving tolerance catches errors). Use monkeypatching or dependency injection to temporarily inject bugs. Verify that removing the mutation causes the test to pass again."
+          },
+          {
+            "id": 4,
+            "title": "Implement TestEdgeCases Class",
+            "description": "Create edge case tests covering special scenarios from PRD Appendix including negative FCF, zero revenue, IPO short history, stub periods, and accounting standard transitions.",
+            "dependencies": [
+              1,
+              6
+            ],
+            "details": "Create `TestEdgeCases` class with the following tests:\n1. `test_negative_fcf` - Verify system correctly handles and reports negative free cash flow values\n2. `test_zero_revenue_margin` - Test margin calculations when revenue is zero (should return INSUFFICIENT_DATA, not divide-by-zero error)\n3. `test_ipo_short_history` - Test companies with limited history (IPO year), verify graceful handling of missing prior periods\n4. `test_stub_period_yoy` - Test YoY calculations when comparing stub periods (fiscal year change), verify appropriate quality flags\n5. `test_asc606_modified` - Test revenue recognition across ASC 606 transition using modified retrospective method\n6. `test_asc842_pre_post` - Test lease accounting across ASC 842 transition, verify ROIC handles pre/post adoption correctly\n\nEach test should use specific golden companies known to exhibit these edge cases and verify INSUFFICIENT_DATA is returned (not errors) for missing data scenarios.",
+            "status": "pending",
+            "testStrategy": "Verify each edge case test passes with appropriate handling. Confirm INSUFFICIENT_DATA quality flag is returned instead of exceptions for missing data. Test that ASC 606/842 transition companies produce valid results with correct quality flags."
+          },
+          {
+            "id": 5,
+            "title": "Add Test Documentation and CI Integration",
+            "description": "Document the test suite structure, add pytest markers for test categorization, and ensure proper CI/CD integration with coverage reporting.",
+            "dependencies": [
+              2,
+              3,
+              4
+            ],
+            "details": "Complete the test suite with:\n1. Add module-level docstring explaining test structure and golden dataset requirements\n2. Add pytest markers: `@pytest.mark.golden` for golden dataset tests, `@pytest.mark.mutation` for mutation tests, `@pytest.mark.edge_case` for edge cases\n3. Register markers in `pytest.ini` or `pyproject.toml`\n4. Add `conftest.py` entries if needed for shared fixtures\n5. Create test configuration for CI that runs: `pytest tests/test_metrics_vs_golden.py -v --tb=short`\n6. Add coverage configuration to track metric calculation code coverage\n7. Document expected test counts: 20 companies × years × 8 metrics for golden tests, 5 mutation tests, 6 edge case tests\n8. Add README section in tests/ explaining how to run golden dataset tests and interpret results",
+            "status": "pending",
+            "testStrategy": "Verify all pytest markers are recognized with `pytest --markers`. Run full test suite with coverage reporting and confirm >90% coverage of metrics calculation code. Validate CI configuration runs successfully in pipeline."
+          },
+          {
+            "id": 6,
+            "title": "Precondition bramki: walidacja wyroczni 18.5 + kompletnosc #26, twardy stop, kategorie bledu",
+            "description": "Precondition bramki #23. PRZED jakimkolwiek porownaniem metryk z silnikiem odpala: (1) walidacje wewnetrzna wyroczni 18.5 (assets=L+E, gross_profit=revenue-cogs, net_income(RZiS)=start rachunku przeplywow, Q1+Q2+Q3+Q4=FY); (2) zadanie #26 - kompletnosc golden setu. TWARDY STOP: jesli ktorekolwiek nie przejdzie, bramka przerywa PRZED 23.2/23.3/23.4. Porownywanie z niedomknieta (18.5) lub niekompletna (#26) wyrocznia produkuje diagnozy w zla strone - naprawiasz poprawny kod pod bledna liczbe.",
+            "details": "Przed porownaniem metryk odpala 18.5 (assets=L+E, gross_profit=revenue-cogs, net_income=start CF, Q1+Q2+Q3+Q4=FY) ORAZ zadanie #26 (kompletnosc). Twardy STOP jesli ktorekolwiek nie przejdzie - 23.2/23.3/23.4 zaleza od tego preconditionu.",
+            "status": "pending",
+            "dependencies": [
+              1
+            ],
+            "parentTaskId": 23,
+            "testStrategy": "Test: 18.5 nie przechodzi -> precondition FAIL kategorii ORACLE_INVALID; 23.2/23.3/23.4 nieuruchomione. Test: #26 zglasza brak wymaganego przypadku (np. modified-retro) -> precondition FAIL kategorii GOLDEN_INCOMPLETE, nie zielono. Kazdy FAIL preconditionu wskazuje kategorie: ORACLE_INVALID albo GOLDEN_INCOMPLETE."
+          }
+        ]
+      },
+      {
+        "id": 24,
+        "title": "Unify Quality Flag Vocabulary and Coverage Report",
+        "description": "Standardize quality_flag values across all modules to use consistent vocabulary (OK/PARTIAL/INSUFFICIENT_DATA). Fix coverage_report to match this standard.",
+        "details": "Current inconsistency: `coverage_report` in facts_repo.py returns 'MISSING' but schema expects 'INSUFFICIENT_DATA'.\n\nUpdate `data_layer/sec/facts_repo.py`:\n```python\ndef coverage_report(self, cik: int, as_of_date: date) -> dict[str, str]:\n    # Change 'MISSING' -> 'INSUFFICIENT_DATA' to match schema\n    out: dict[str, str] = {}\n    for concept in CORE_TAGS:\n        series = self.get_metric_series(cik, as_of_date, concept)\n        if not series:\n            out[concept] = 'INSUFFICIENT_DATA'  # was 'MISSING'\n        elif len(series) < 4:\n            out[concept] = f'PARTIAL ({len(series)} periods)'\n        else:\n            out[concept] = f'OK ({len(series)} periods, latest {series[0].period_end})'\n    return out\n```\n\nCreate shared enum in `data_layer/common/quality.py`:\n```python\nfrom enum import Enum\n\nclass QualityFlag(str, Enum):\n    OK = 'OK'\n    PARTIAL = 'PARTIAL'\n    INSUFFICIENT_DATA = 'INSUFFICIENT_DATA'\n```\n\nUpdate all modules to import from common:\n- data_layer/metrics/financial_period.py\n- data_layer/sec/facts_repo.py (coverage_report)\n- Any new metric modules\n\nThis ensures consistency with schema.sql which expects these three values.",
+        "testStrategy": "1. Test that coverage_report returns 'INSUFFICIENT_DATA' (not 'MISSING') for missing concepts\n2. Test that QualityFlag enum values match schema.sql allowed values\n3. Verify no module defines its own quality flag values\n4. Integration test: metric saved with quality_flag validates against DB constraint",
+        "priority": "low",
+        "dependencies": [
+          14
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 25,
+        "title": "Golden dataset — ręczna transkrypcja (Tier 1 + Tier 2)",
+        "description": "Ręczne przepisanie ~1200 wartości z filingów SEC do tests/golden/<ticker>.py. Najdłuższy, niedelegowalny element T3-T4 i wyrocznia dla całego silnika. Tier 1: 5 spolek x 10 lat (+ kwartaly). Tier 2: 15 spolek x 3 lata wokol edge case danej spolki (10-KT, przejscie ASC 606, ujemny FCF, spin-off, ~zerowy przychod). Kazda wartosc: jednostka zaokraglenia + URL filingu + accession + nota. Lata <2019: reczne minimalne platnosci leasingowe z przypisow. Walidacja wewnetrzna: assets=liabilities+equity, gross_profit=revenue-cogs, net_income(RZiS)=start rachunku przeplywow, Q1+Q2+Q3+Q4=FY.",
+        "details": "Praca reczna, nie do wygenerowania kodem. Postep sledzony przez podzadania Tier 1 / Tier 2. 20 spolek mapuje sie czysto na 6 roznych kubelkow FF12. PELNA LISTA WYMOGOW NAROSLYCH Z ROZBIC: (A) linie per spolka-rok: revenue, cogs, gross_profit, operating_income, net_income, ocf, capex, assets, liabilities, equity, cash, short_term_investments, short_term_debt, long_term_debt, finance_lease (cur+noncur), operating_lease_liab (cur+noncur), operating_lease_ROU_asset, D_and_A, goodwill, PPE_net, assets_current, liabilities_current, intangibles, SBC, shares_diluted, tax_expense, pretax_income, interest_expense. (B) Kazda wartosc: liczba + jednostka zaokraglenia (unit_precision, do tolerancji) + URL + accession + strona/nota. (C) Lata <2019 spolek leasingowych: minimalne platnosci leasingowe Z PRZYPISOW (nieotagowane) ORAZ ujawniona weighted-average lease discount rate z noty leasingowej - z tego samego filingu. (D) Jawne parametry modelowe ROIC per spolka: goodwill in/out, definicja excess cash, zrodlo stopy dyskontowej - golden liczy przy tych samych zalozeniach. (E) Walidacja wewnetrzna: assets=liabilities+equity, gross_profit=revenue-cogs, net_income(RZiS)=start rachunku przeplywow, Q1+Q2+Q3+Q4=FY (Tier 1). (F) Wymogi doboru spolek z analizy mutacji: co najmniej jedna spolka MODIFIED retrospective ASC 606 na granicy 2017->2018 (inaczej mutacja adopcji z 17.5 niewykrywalna) oraz leasingowo-ciezki retailer z danymi sprzed 2019 (twardy test ROIC 20.5) i leasingowo-lekki SaaS dla kontrastu. (G) DEKLARACJA N/A per spolka-rok: golden jawnie deklaruje, ktore pozycje sa oczekiwanie nieobecne, z NOTA ze sprawozdania jako uzasadnieniem. Brak deklaracji dla brakujacej pozycji lub deklaracja bez noty = FAIL w #26. Wymusza zapis decyzji przy czytaniu filingu, nie pozniej z pamieci.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          18
+        ],
+        "priority": "high",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Tier 1 — 5 spolek x 10 lat rocznych (+ surowe kwartaly Q1-Q3+FY)",
+            "description": "",
+            "details": "Glebia: trend i stabilnosc marz. Te 5 spolek dostaje kwartaly do walidacji derywacji Q4 w T7.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 25
+          },
+          {
+            "id": 2,
+            "title": "Tier 2 — 15 spolek x 3 lata wokol edge case danej spolki",
+            "description": "",
+            "details": "15 spolek x 3 lata wokol edge case danej spolki; 3 lata obejmuja rok wystapienia edge case. Wymagane przypadki: 10-KT (zmiana roku podatkowego) / ASC 606 FULL retrospective / ASC 606 MODIFIED retrospective na granicy 2017->2018 (WYMAGANA - inaczej mutacja 17.5 niewykrywalna) / ujemny FCF / ~zerowy przychod / spin-off / IPO <8 kwartalow / leasingowo-ciezki retailer z danymi <2019 (twardy test ROIC 20.5) / leasingowo-lekki SaaS (kontrast). Przypadku brzegowego nie testuje sie 10-letnim szeregiem.",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 25
+          }
+        ]
+      },
+      {
+        "id": 26,
+        "title": "Golden-set completeness gate + licznik pokrycia",
+        "description": "Osobne, samodzielnie uruchamialne zadanie sprawdzajace KOMPLETNOSC golden setu; uzywane tez jako licznik postepu w trakcie transkrypcji (np. pokryte 6 z 9 wymaganych przypadkow). Bramka #23 wola je jako precondition. FAIL (nie skip) gdy brakuje ktoregokolwiek wymaganego przypadku. Sens: brak spolki wykryty w tygodniu 2-3, gdy jeszcze siedzisz w filingach, nie w tygodniu 4 przy bramce.",
+        "details": "Wymagane przypadki (FAIL gdy brak): >=1 spolka MODIFIED retrospective ASC 606 na granicy 2017->2018; leasingowo-ciezki retailer <2019 Z platnosciami minimalnymi I ujawniona stopa dyskontowa; parametry modelowe ROIC per spolka leasingowa; ujemny FCF; ~zerowy przychod; IPO <8 kwartalow; spin-off; 10-KT; ASC 606 FULL retrospective; leasingowo-lekki SaaS. BIALA LISTA N/A WYPROWADZONA nie wpisana: golden deklaruje PER SPOLKA-ROK ktore pozycje sa oczekiwanie nieobecne, z NOTA ze sprawozdania. Brak deklaracji dla brakujacej pozycji -> FAIL. Deklaracja bez noty -> FAIL. Ta sama zasada co jednostka zaokraglenia. Uruchamialne samodzielnie jako licznik pokrycia.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          25
+        ],
+        "priority": "high",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2026-08-24T19:04:10.783Z",
+      "updated": "2026-08-27T13:23:23.056Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

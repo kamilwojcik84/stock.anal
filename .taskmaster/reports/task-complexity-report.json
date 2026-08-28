@@ -1,0 +1,109 @@
+{
+	"meta": {
+		"generatedAt": "2026-08-24T19:08:24.702Z",
+		"tasksAnalyzed": 12,
+		"totalTasks": 12,
+		"analysisCount": 12,
+		"thresholdScore": 5,
+		"projectName": "Task Master",
+		"usedResearch": true
+	},
+	"complexityAnalysis": [
+		{
+			"taskId": 1,
+			"taskTitle": "Create golden dataset structure and manual data collection framework",
+			"complexityScore": 6,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Break down the golden dataset creation into: (1) Define Python template structure for tests/golden/<ticker>.py with all required fields (value, rounding_unit, filing_url, accession, page_reference); (2) Create company selection script analyzing bootstrap.py --report output for sector coverage and data completeness; (3) Build internal validation functions (assets=liabilities+equity, gross_profit=revenue-cogs, net_income matching); (4) Create TIER 1 data collection workflow for 5 companies × 10 years + quarters; (5) Create TIER 2 data collection workflow for 15 companies × 3 years around edge cases; (6) Implement edge case detection (10-KT forms, negative FCF, zero revenue, IPO, spin-off, ASC 606 transitions, ASC 842 lease-heavy); (7) Build spot-check verification tool; (8) Create final validation report ensuring 6 distinct FF12 sectors and complete coverage.",
+			"reasoning": "This is primarily MANUAL WORK (transcribing ~1,200 values from filings) with supporting code infrastructure. Complexity 6 because: (a) requires creating Python template structure matching existing test patterns, (b) needs validation logic for internal consistency checks, (c) must handle edge case detection systematically, (d) company selection is data-driven (depends on bootstrap report), (e) quality control through spot-checking. Not higher because the template structure is straightforward and validation is deterministic math. The hard work is manual transcription (37h), not code complexity."
+		},
+		{
+			"taskId": 2,
+			"taskTitle": "Extend CORE_TAGS for net debt, FCF, and ROIC components",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Expand into: (1) Research US-GAAP taxonomy documentation for each new tag to understand semantic relationships (DISJOINT/SUBSET/EQUIVALENT); (2) Add new tags to CORE_TAGS dictionary with priority lists and documented relationships; (3) Implement double-counting detection logic for debt tags (LongTermDebt superset handling); (4) Create unit tests for each priority list proving correct ordering (mutation tests that swap order and verify failure); (5) Build coverage_report validator on golden dataset companies checking OK/MISSING patterns; (6) Document tolerance derivation rules for each new metric based on source rounding units.",
+			"reasoning": "Complexity 7 due to: (a) Critical semantic analysis required - the existing codebase shows LongTermDebt double-counting bug that must be avoided, (b) Tag relationships are NOT obvious from names (requires US-GAAP spec knowledge), (c) Mutation testing requirement adds verification complexity, (d) Integration with existing CORE_TAGS pattern is well-defined (line 29-68 in xbrl_parser.py), (e) Must preserve existing PIT reconstruction logic in facts_repo.py. Main risk: subtle semantic bugs that only manifest on specific company filings (e.g., when fallback tags fire). Existing code provides clear patterns to follow."
+		},
+		{
+			"taskId": 3,
+			"taskTitle": "Implement FinancialPeriod assembler architectural boundary",
+			"complexityScore": 8,
+			"recommendedSubtasks": 10,
+			"expansionPrompt": "Break into: (1) Create FinancialPeriod dataclass with LineItem, QualityFlag, ASC606AdoptionMethod enums; (2) Implement FinancialPeriodAssembler skeleton with dependency on existing FactsRepository; (3) Implement get_annual_period with duration filtering (350-380 days); (4) Build LineItem construction from FactValue objects returned by facts_repo.get_facts_as_of; (5) Implement ASC 606 adoption detection stub (detailed in Task 4); (6) Implement stub period detection stub (detailed in Task 5); (7) Set quality_flag logic based on data availability; (8) Create static architecture boundary test (AST parsing to prevent metrics importing FactsRepository); (9) Write unit tests for duration filtering, as_of_date enforcement, quality flag propagation; (10) Integration test on AAPL FY2019 verifying full traceability chain.",
+			"reasoning": "Complexity 8 because: (a) This establishes HARD ARCHITECTURAL BOUNDARY between data and metrics layers - critical design decision, (b) Must integrate cleanly with existing FactsRepository (lines 96-174 in facts_repo.py show PIT reconstruction complexity), (c) Duration filtering (350-380 days) is new logic not in existing codebase, (d) ASC 606 and stub period detection are complex (separate tasks 4&5) but stubs needed here, (e) Static boundary enforcement via AST parsing is novel, (f) Quality flag propagation affects all downstream metrics. High complexity because this is foundational infrastructure that all future metrics depend on. Error here cascades everywhere."
+		},
+		{
+			"taskId": 4,
+			"taskTitle": "Implement ASC 606 adoption method detection in assembler",
+			"complexityScore": 7,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Expand to: (1) Implement _detect_asc606_adoption in FinancialPeriodAssembler checking for restated prior periods; (2) Build transition year filing identification logic; (3) Implement BINARY detection (full vs modified retrospective) without thresholds; (4) Create dual-tag divergence checker flagging ANY difference between old/new revenue tags; (5) Add asc606_divergences metadata storage in FinancialPeriod; (6) Integrate detection into get_annual_period for years 2017-2020; (7) Write golden dataset tests for both adoption methods (full retro company and modified retro company).",
+			"reasoning": "Complexity 7 due to: (a) ASC 606 transition is real-world accounting complexity requiring domain knowledge, (b) Detection must be BINARY (no thresholds per §8 constitution) - either restated or not, (c) Dual-tag divergence detection with zero tolerance is strict requirement, (d) Must query across multiple filings to detect restatements (integration with existing facts_repo PIT logic), (e) Edge cases: companies adopting in different years (2017-2019), UNKNOWN cases treated as MODIFIED, (f) Integration point with Task 3's FinancialPeriod structure. Existing codebase provides get_facts_as_of foundation but this logic is new domain."
+		},
+		{
+			"taskId": 5,
+			"taskTitle": "Implement fiscal year change (stub period) detection",
+			"complexityScore": 6,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Break down to: (1) Implement _detect_stub_period checking duration and 10-KT form; (2) Add logic to flag ONLY duration items (period_start NOT NULL) as PARTIAL; (3) Preserve instant items (balance sheet) as OK quality flag; (4) Implement YoY growth comparability logic (stub period and stub+1 return None); (5) Add is_stub_period and is_comparable_to_prior flags to FinancialPeriod; (6) Write comprehensive tests covering 10-KT detection, duration edge cases (180 days, 365 days), and YoY growth blocking for 2 years around transition.",
+			"reasoning": "Complexity 6 because: (a) Duration vs instant item distinction is subtle but critical (balance sheet valid, income statement not), (b) TWO independent signals (duration AND form) must be handled, (c) Comparability impact spans 2 years (to stub and from stub), (d) Integration with existing period_start nullable pattern in schema (line 38 schema.sql), (e) Simpler than ASC 606 because it's a binary flag based on clear criteria (duration thresholds and form type). Existing codebase has period_start/period_end in Fact (xbrl_parser.py line 80-81) providing foundation."
+		},
+		{
+			"taskId": 6,
+			"taskTitle": "Implement core metrics engine (revenue growth, margins, FCF, net debt, coverage)",
+			"complexityScore": 7,
+			"recommendedSubtasks": 12,
+			"expansionPrompt": "Expand to: (1) Create CoreMetricsCalculator class consuming FinancialPeriod (never FactsRepository); (2) Implement calculate_revenue_growth_yoy with stub period and ASC 606 comparability checks; (3) Implement calculate_gross_margin with fallback to revenue-cogs; (4) Implement calculate_operating_margin; (5) Implement calculate_net_margin; (6) Implement calculate_fcf returning (FCF, SBC) tuple, handling negative FCF; (7) Implement calculate_net_debt with finance lease inclusion and double-counting prevention; (8) Implement calculate_interest_coverage; (9) Create metrics table persistence with traceability (inputs_json, source_accessions, code_sha); (10) Add git commit hash extraction for code_sha; (11) Write unit tests for each metric including edge cases (zero revenue, negative FCF, None handling); (12) Implement quality flag derivation from FinancialPeriod LineItem flags.",
+			"reasoning": "Complexity 7 because: (a) 5 distinct metrics with different edge case handling, (b) Must consume FinancialPeriod abstraction (Task 3 dependency), (c) Finance lease inclusion in net_debt is critical post-ASC842 (debt double-counting bug to avoid from Task 2), (d) Traceability requirements (inputs_json, source_accessions, code_sha) add persistence complexity, (e) INSUFFICIENT_DATA propagation instead of imputation throughout, (f) Integration with existing schema.sql metrics table (lines 87-99), (g) Git SHA extraction for code versioning. Not complexity 8+ because each metric formula is straightforward once FinancialPeriod provides clean inputs. Main complexity is comprehensive edge case coverage."
+		},
+		{
+			"taskId": 7,
+			"taskTitle": "Validate core metrics against golden dataset and implement tolerance rules",
+			"complexityScore": 9,
+			"recommendedSubtasks": 14,
+			"expansionPrompt": "Break into: (1) Implement derive_tolerance function handling source rounding unit propagation; (2) Create parametrized test for revenue_growth across all 20 golden companies; (3) Create parametrized tests for gross_margin, operating_margin, net_margin, FCF, net_debt, coverage; (4) Implement edge case tests (negative FCF, zero revenue, IPO <8 quarters, stub period); (5) Create mutation test framework for finance lease omission; (6) Implement debt double-count mutation test; (7) Implement capex sign error mutation test; (8) Implement ASC606 tag priority reversal mutation test; (9) Build manual verification helper for spot-checking 3 random filings; (10) Create coverage report validator checking quality flags; (11) Build golden dataset accessor/registry for test data; (12) Implement tolerance comparison assertions with detailed mismatch reporting; (13) Create gate validation script running all tests and producing pass/fail report; (14) Document all failures with links to source filings for investigation.",
+			"reasoning": "Complexity 9 because: (a) This is T3-T4 GATE - absolutely critical validation checkpoint blocking all future work, (b) Tolerance derivation is subtle (half of rounding unit propagated through formulas, relative tolerance for margins), (c) 20 companies × ~10 years × 5 metrics = ~1000 validation points, (d) Mutation testing framework is meta-testing (testing the tests), (e) Manual spot-checking workflow requires tooling to identify discrepancies, (f) EXACT match requirement for ROIC (no tolerance), (g) Edge cases are MANDATORY (not nice-to-have), (h) Failure investigation requires EDGAR filing comparison. This is validation-heavy, not code-heavy, but the orchestration and diagnostic tooling is complex. Golden dataset from Task 1 must exist first. Highest complexity because 100% pass required - any failure blocks project."
+		},
+		{
+			"taskId": 8,
+			"taskTitle": "Implement sector routing (SIC → Fama-French classification)",
+			"complexityScore": 5,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Expand to: (1) DECISION GATE: Choose FF12 vs FF17 classification (requires user confirmation); (2) Implement SectorBucket enum with chosen classification; (3) Create SIC_TO_FF12 (or FF17) range mapping dictionary; (4) Implement map_sic_to_sector function with exclusion logic for financials/REITs; (5) Implement is_financial_or_reit detector (SIC 6000-6999, SIC 6798, name contains 'REIT'); (6) Create populate_sectors.py script updating securities.sector column; (7) Write golden dataset validation test ensuring 6 distinct sectors represented.",
+			"reasoning": "Complexity 5 because: (a) BLOCKS on user decision (FF12 vs FF17) at start, (b) SIC range mapping is straightforward data structure (enum + dict), (c) Exclusion logic is simple (SIC ranges + string match), (d) Integration point is existing securities.sector column (schema.sql line 23), (e) Determinism and versioning requirements are metadata, (f) Golden dataset validation is single assertion (6 distinct sectors). This is lower complexity - mostly data structure definition and simple lookup logic. Main work is ensuring complete SIC range coverage and correct financial/REIT exclusion. Pattern similar to existing CORE_TAGS dict in xbrl_parser.py."
+		},
+		{
+			"taskId": 9,
+			"taskTitle": "Implement ROIC calculation with operating lease capitalization",
+			"complexityScore": 10,
+			"recommendedSubtasks": 15,
+			"expansionPrompt": "Break down to: (1) Create ROICComponents dataclass with full breakdown (NOPAT, invested capital, all sub-components); (2) Implement ROICCalculator with configurable goodwill/excess_cash treatment; (3) Implement NOPAT calculation with effective tax rate (clamped 0-1); (4) Implement invested capital base components (equity + total_debt); (5) Add finance lease liability inclusion; (6) Implement post-ASC842 operating lease handling (from tags); (7) Implement pre-ASC842 manual lease capitalization (from golden dataset); (8) Create _get_manual_lease_capitalization lookup to golden dataset; (9) Implement excess cash calculation with operating minimum method; (10) Add goodwill adjustment logic; (11) Set is_comparable_pre_asc842 flag; (12) Write HARD test: lease-heavy retailer pre-2019 EXACT match; (13) Write post-ASC842 validation test; (14) Write non-comparable flagging test for missing lease data; (15) Implement mutation tests (lease omission, wrong excess cash method).",
+			"reasoning": "Complexity 10 (MAXIMUM) because: (a) Constitution states 'ROIC gets its own week in T5-T6 (this is NOT one of ten metrics)' - explicitly called out as hardest, (b) ASC 842 lease accounting transition is most complex accounting change in dataset, (c) Pre-2019 requires manual lease capitalization from footnotes (NOT in XBRL tags), (d) Dual path: post-2019 tag-based vs pre-2019 manual lookup, (e) Invested capital formula has 7+ components each with edge cases, (f) Effective tax rate calculation with clamping, (g) Configurable goodwill/excess cash treatment (model decisions), (h) EXACT match requirement (not tolerance) on golden dataset, (i) is_comparable flag logic spans 10+ years, (j) Mutation tests must catch subtle errors like lease omission. This is the most complex single metric by far. Requires deep accounting knowledge and handles the hardest data quality issues."
+		},
+		{
+			"taskId": 10,
+			"taskTitle": "Implement PIT universe membership tracking",
+			"complexityScore": 7,
+			"recommendedSubtasks": 9,
+			"expansionPrompt": "Expand to: (1) Create UniverseTracker class with DuckDB connection; (2) Implement get_universe_members with as_of_date enforcement; (3) Build SQL query joining securities, price_daily, and sec_facts for market cap calculation; (4) Implement latest price lookup (max date <= as_of_date); (5) Implement latest shares_outstanding lookup from sec_facts instant values; (6) Add sector NOT NULL filter (excludes financials/REITs per Task 8); (7) Add delisted_date filter (NULL or > as_of_date); (8) Implement market cap threshold enforcement ($2B); (9) Write tests for delisting edge cases, financial exclusion, mcap filtering, as_of_date=None rejection.",
+			"reasoning": "Complexity 7 because: (a) Addresses gap #8 from constitution - critical for preventing survivorship + look-ahead bias, (b) Multi-table join (securities + price_daily + sec_facts) for market cap calculation, (c) PIT reconstruction for BOTH prices and shares_outstanding, (d) Shares outstanding is instant value from sec_facts requiring PIT query pattern (similar to facts_repo.py line 138-149), (e) Delisting date logic must handle three cases (NULL, future, past), (f) Integration with Task 8 sector routing (sector NOT NULL filter), (g) Foundation for Task 11 percentile calculation. Constitution notes TODO for production: materialized snapshots and indexing, but T5-T6 can calculate on-demand. Complexity from multi-source PIT reconstruction, not from code volume."
+		},
+		{
+			"taskId": 11,
+			"taskTitle": "Implement sector percentile calculation with PIT universe",
+			"complexityScore": 8,
+			"recommendedSubtasks": 12,
+			"expansionPrompt": "Break into: (1) DECISION GATE: Set MIN_BUCKET_SIZE based on empirical bucket size distribution from analyze_bucket_sizes script; (2) Create PercentileCalculator class with UniverseTracker dependency; (3) Implement calculate_percentile with as_of_date enforcement; (4) Build _get_sector_members filtering universe by sector; (5) Implement _get_factor_values querying metrics table with quality_flag filtering; (6) Add _is_comparable check for ROIC pre-ASC842 flags; (7) Implement percentile calculation using scipy.stats.rankdata with 'average' tie handling; (8) Add minimum bucket size check returning None for small sectors; (9) Create factor_scores table schema; (10) Implement persistence with bucket_size diagnostic; (11) Write determinism test; (12) Write comprehensive validation tests (PIT universe, INSUFFICIENT_DATA exclusion, bucket size threshold, tie handling).",
+			"reasoning": "Complexity 8 because: (a) BLOCKS on user decision (MIN_BUCKET_SIZE) requiring empirical analysis first, (b) Integration with Task 10 PIT universe (dependency), (c) Quality flag filtering (INSUFFICIENT_DATA exclusion) affects percentile base, (d) ROIC comparability flag checking (Task 9 dependency), (e) Scipy.stats.rankdata integration for statistical correctness, (f) Tie handling with 'average' method, (g) Minimum bucket size enforcement (noise reduction), (h) Determinism requirement (same input = same output), (i) Multi-table queries (universe + sector + metrics), (j) Factor_scores table persistence with diagnostics. High complexity from statistical correctness requirements and multiple dependency integrations. Constitution emphasizes this must be PIT (not today's universe) - core requirement."
+		},
+		{
+			"taskId": 12,
+			"taskTitle": "End-to-end validation: T5-T6 gate (ROIC + percentiles on golden dataset)",
+			"complexityScore": 9,
+			"recommendedSubtasks": 16,
+			"expansionPrompt": "Break into: (1) Create TestT5T6Gate test class structure; (2) Implement test_roic_all_golden_companies parametrized across 20 companies; (3) Add lease-heavy retailer pre-2019 HARD test; (4) Implement test_sector_percentiles_pit validating universe changes over time; (5) Create test_insufficient_data_excluded_from_percentile_base; (6) Implement test_minimum_bucket_size_enforced; (7) Create test_non_comparable_roic_excluded; (8) Implement test_all_core_metrics_and_percentiles_integration full pipeline test; (9) Build traceability audit (inputs_json, source_accessions, code_sha validation); (10) Create manual spot-check helper opening random filings; (11) Build coverage report validator for quality flags; (12) Implement percentile sanity checks (AAPL in top quartile); (13) Create PIT universe validation (delisted companies excluded from future); (14) Re-run all Task 7 mutation tests; (15) Build gate validation orchestrator script; (16) Create falsifiable pass/fail report with specific failure diagnostics.",
+			"reasoning": "Complexity 9 because: (a) This is T5-T6 BRAMKA - final gate before next PRD, blocks all future work, (b) Integration test across ALL prior tasks (1-11 dependencies), (c) Full pipeline: ingest → assemble → metrics → percentiles → persistence, (d) ROIC EXACT match on lease-heavy pre-2019 (hardest test), (e) Percentile validation requires PIT universe reconstruction, (f) Traceability audit across entire data flow, (g) Manual spot-checking workflow for 3 random filings, (h) Mutation tests must still pass (regression check), (i) 100% pass criterion (no partial credit), (j) Diagnostic reporting for any failure with filing links. Constitution states 'DO NOT PROCEED to next PRD until this gate is 100% green.' This is comprehensive system validation, not unit testing. Similar complexity to Task 7 but broader scope (all metrics + percentiles + ROIC)."
+		}
+	]
+}
